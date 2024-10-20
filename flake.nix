@@ -45,6 +45,14 @@
             cargo-edit
             cargo-watch
             rust-analyzer
+            glib
+            gtk4
+            cairo
+            cairomm
+            graphene
+            pango
+            pangomm
+            gdk-pixbuf
           ];
 
           env = {
