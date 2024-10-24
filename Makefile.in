@@ -1,0 +1,12 @@
+CARGO=cargo
+SRC=src/
+TARGET=target/
+RELEASE=$(TARGET)/release/
+MAIN_RS=$(SRC)/main.rs
+CARGO_TOML=Cargo.toml
+BINARY=gkey
+
+all: $(BINARY)
+
+$(BINARY): $(CARGO_TOML) $(MAIN_RS)
+	$(CARGO) build --release

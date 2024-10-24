@@ -2,6 +2,7 @@
 name = "gkey"
 version = "0.1.0"
 edition = "2021"
+authors = ["Krishap krishapbusiness@gmail.com"]
 
 [dependencies]
 glib = "0.20.4"
