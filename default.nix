@@ -30,9 +30,8 @@ stdenv.mkDerivation {
 
   configurePhase = ''
     autoconf
-    ./configure
+    ./configure --prefix=$out
   '';
-  makeFlags = [ "prefix=${placeholder "out"}" ];
 
 
   meta = with pkgs; {

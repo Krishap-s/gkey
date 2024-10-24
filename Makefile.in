@@ -4,9 +4,20 @@ TARGET=target/
 RELEASE=$(TARGET)/release/
 MAIN_RS=$(SRC)/main.rs
 CARGO_TOML=Cargo.toml
+
 BINARY=gkey
-
-all: $(BINARY)
-
+RELEASE_BINARY=$(RELEASE)/$(BINARY)
 $(BINARY): $(CARGO_TOML) $(MAIN_RS)
 	$(CARGO) build --release
+
+all: $(RELEASE_BINARY)
+
+build: $(CARGO_TOML) $(MAIN_RS)
+	$(CARGO) build --release
+
+
+install: $(RELEASE_BINARY)
+	install -d $(DESTDIR)@SBINDIR@
+	install -m 755 $(RELEASE_BINARY) ${DESTDIR}@SBINDIR@/$(BINARY)
+
+#TODO:Add other targets required by GNU coding standards https://www.gnu.org/prep/standards/html_node/Standard-Targets.html

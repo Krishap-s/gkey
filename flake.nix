@@ -8,6 +8,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
+  
 
   outputs = { self, nixpkgs, rust-overlay }:
     let
@@ -53,6 +54,9 @@
             pango
             pangomm
             gdk-pixbuf
+            autoconf
+            gnumake
+            nodejs_22
           ];
 
           env = {
@@ -60,6 +64,10 @@
             RUST_SRC_PATH = "${pkgs.rustToolchain}/lib/rustlib/src/rust/library";
           };
         };
+      });
+
+      packages = forEachSupportedSystem({ pkgs }: {
+        default = (import ./default.nix {inherit pkgs; });
       });
     };
 }
