@@ -32,36 +32,21 @@
             rust.fromRustupToolchainFile ./rust-toolchain
           else
             rust.stable.latest.default.override {
-              extensions = [ "rust-src" "rustfmt" ];
+              extensions = [ "rust-src" "rustfmt" "rust-analyzer" "clippy"];
             };
       };
 
       devShells = forEachSupportedSystem ({ pkgs }: {
         default = pkgs.mkShell {
-          packages = with pkgs; [
-            rustToolchain
-            openssl
-            pkg-config
-            cargo-deny
-            cargo-edit
-            cargo-watch
-            rust-analyzer
-            glib
-            gtk4
-            cairo
-            cairomm
-            graphene
-            pango
-            pangomm
-            gdk-pixbuf
-            autoconf
-            gnumake
-            nodejs_22
+          inputsFrom = [ (pkgs.callPackage ./default.nix { }) ];
+
+          buildInputs = with pkgs; [
+            glibcLocales
           ];
 
           env = {
             # Required by rust-analyzer
-            RUST_SRC_PATH = "${pkgs.rustToolchain}/lib/rustlib/src/rust/library";
+            LOCALE_ARCHIVE= "${pkgs.glibcLocales}/lib/locale/locale-archive";
           };
         };
       });

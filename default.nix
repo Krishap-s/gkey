@@ -1,9 +1,13 @@
 { pkgs ? <nixpkgs> { }
 , stdenv ? pkgs.stdenv
 # A set providing `buildRustPackage :: attrsets -> derivation`
-, rustPlatform ? pkgs.rustPlatform
 }:
-
+let 
+  rustPlatform =  pkgs.makeRustPlatform {
+    rustc = pkgs.rust-bin.stable.latest.default;
+    cargo = pkgs.rust-bin.stable.latest.default;
+  };
+in
 stdenv.mkDerivation {
   pname = "gkey";
   version = "0.1.0";
@@ -14,6 +18,10 @@ stdenv.mkDerivation {
     lockFile = ./Cargo.lock;
   };
 
+  env = {
+    LOCALE_ARCHIVE= "${pkgs.glibcLocales}/lib/locale/locale-archive";
+  };  
+
   buildInputs = with pkgs;[
     gtk4
     glib
@@ -23,7 +31,7 @@ stdenv.mkDerivation {
   nativeBuildInputs = [ 
     pkgs.pkg-config
     rustPlatform.cargoSetupHook
-    pkgs.rustc
+    rustPlatform.bindgenHook
     pkgs.cargo
     pkgs.autoconf
   ];
