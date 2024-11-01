@@ -42,6 +42,8 @@
 
           buildInputs = with pkgs; [
             glibcLocales
+            # Used to create mock /dev/uhid 
+            umockdev
           ];
 
           env = {
