@@ -1,17 +1,22 @@
 use io::{Read, Write};
+use std::borrow::BorrowMut;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
+use pin_project::pin_project;
 use tio::unix::AsyncFd;
 use tio::unix::TryIoError;
+use tio::{AsyncRead, AsyncWrite};
 use tokio::io as tio;
 
-use uhid_virt::{CreateParams, InputEvent, OutputEvent, StreamError, UHID_EVENT_SIZE};
+use uhid_virt::{CreateParams, InputEvent, StreamError, UHID_EVENT_SIZE};
 
 pub enum UHIDErr {
+    // Error trying to poll the file descriptor
+    GuardErr(io::Error),
     //IO errors
     IOError(io::Error),
     // Parsing error into valid ['OutputEvent']
@@ -22,32 +27,25 @@ pub enum UHIDErr {
 
 // Taken from https://github.com/flukejones/uhid-virt/blob/master/src/uhid_device.rs and modified
 // for tokio
-pub struct UHIDDevice<T: AsRawFd + Read + Write> {
-    handle: AsyncFd<T>,
+#[pin_project]
+pub struct UHIDDevice<T: Read + Write + AsRawFd> {
+    pub handle: AsyncFd<T>,
 }
 
 /// Character misc-device handle for a specific HID device
 impl<T: AsRawFd + Read + Write> UHIDDevice<T> {
-    /// The data parameter should contain a data-payload. This is the raw data that you read from your device. The kernel will parse the HID reports.
-    pub async fn write(&mut self, data: &[u8]) -> Result<io::Result<usize>, UHIDErr> {
-        let mut gaurd = self.handle.writable_mut().await.map_err(UHIDErr::IOError)?;
-        let event: [u8; UHID_EVENT_SIZE] = InputEvent::Input { data }.into();
-        gaurd
-            .try_io(|handle| handle.get_mut().write(&event))
-            .map_err(UHIDErr::TryIOError)
-    }
-
     /// Write a SetReportReply, only use in reponse to a read SetReport event
-    pub async fn write_set_report_reply(
-        &mut self,
-        id: u32,
-        err: u16,
-    ) -> Result<io::Result<usize>, UHIDErr> {
-        let mut gaurd = self.handle.writable_mut().await.map_err(UHIDErr::IOError)?;
+    pub async fn write_set_report_reply(&mut self, id: u32, err: u16) -> Result<usize, UHIDErr> {
+        let mut guard = self
+            .handle
+            .writable_mut()
+            .await
+            .map_err(UHIDErr::GuardErr)?;
         let event: [u8; UHID_EVENT_SIZE] = InputEvent::SetReportReply { id, err }.into();
-        gaurd
+        let write_res = guard
             .try_io(|handle| handle.get_mut().write(&event))
-            .map_err(UHIDErr::TryIOError)
+            .map_err(UHIDErr::TryIOError)?;
+        write_res.map_err(UHIDErr::IOError)
     }
 
     /// Write a GetReportReply, only use in reponse to a read GetReport event
@@ -56,66 +54,118 @@ impl<T: AsRawFd + Read + Write> UHIDDevice<T> {
         id: u32,
         err: u16,
         data: Vec<u8>,
-    ) -> Result<io::Result<usize>, UHIDErr> {
-        let mut gaurd = self.handle.writable_mut().await.map_err(UHIDErr::IOError)?;
+    ) -> Result<usize, UHIDErr> {
+        let mut guard = self
+            .handle
+            .writable_mut()
+            .await
+            .map_err(UHIDErr::GuardErr)?;
         let event: [u8; UHID_EVENT_SIZE] = InputEvent::GetReportReply { id, err, data }.into();
-        gaurd
+        let write_res = guard
             .try_io(|handle| handle.get_mut().write(&event))
-            .map_err(UHIDErr::TryIOError)
-    }
-
-    /// Reads a queued output event. No reaction is required to an output event, but you should handle them according to your needs.
-    pub async fn read(&mut self) -> Result<OutputEvent, UHIDErr> {
-        let mut gaurd = self.handle.readable_mut().await.map_err(UHIDErr::IOError)?;
-        let mut event = [0u8; UHID_EVENT_SIZE];
-        let read_res = gaurd
-            .try_io(|handle| handle.get_mut().read_exact(&mut event))
             .map_err(UHIDErr::TryIOError)?;
-        // Propogate any errors returned by the read function
-        match read_res {
-            Ok(()) => OutputEvent::try_from(event).map_err(UHIDErr::StreamError),
-            Err(e) => Err(UHIDErr::IOError(e)),
-        }
+        write_res.map_err(UHIDErr::IOError)
+    }
+}
+
+//The try_io function of the asyncfd guard has to be looped to in the case a would block error may
+//appear
+impl<T: Read + Write + AsRawFd> AsyncRead for UHIDDevice<T> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tio::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        buf.set_filled(UHID_EVENT_SIZE);
+        let device = self.project();
+        let mut byte_data: [u8; UHID_EVENT_SIZE] = [0; UHID_EVENT_SIZE];
+        device.handle.poll_read_ready_mut(cx).map(|guard_result| {
+            guard_result.and_then(|mut guard| loop {
+                match guard.try_io(|handle| handle.get_mut().read(byte_data.borrow_mut())) {
+                    Ok(res) => break res.map(|_| ()),
+                    Err(_) => continue,
+                }
+            })
+        })
+    }
+}
+
+impl<T: Read + Write + AsRawFd> AsyncWrite for UHIDDevice<T> {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, io::Error>> {
+        let device = self.project();
+        device.handle.poll_write_ready_mut(cx).map(|guard_result| {
+            guard_result.and_then(|mut guard| loop {
+                match guard.try_io(|handle| handle.get_mut().write(buf)) {
+                    Ok(res) => break res,
+                    Err(_) => continue,
+                }
+            })
+        })
     }
 
-    /// This destroys the internal HID device. No further I/O will be accepted. There may still be pending output events that you can receive but no further input events can be sent to the kernel.
-    pub async fn destroy(&mut self) -> Result<io::Result<usize>, UHIDErr> {
-        let mut gaurd = self.handle.writable_mut().await.map_err(UHIDErr::IOError)?;
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        let device = self.project();
+        device.handle.poll_write_ready_mut(cx).map(|guard_result| {
+            guard_result.and_then(|mut guard| loop {
+                match guard.try_io(|handle| handle.get_mut().flush()) {
+                    Ok(res) => break res,
+                    Err(_) => continue,
+                }
+            })
+        })
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), io::Error>> {
         let event: [u8; UHID_EVENT_SIZE] = InputEvent::Destroy.into();
-        gaurd
-            .try_io(|handle| handle.get_mut().write(&event))
-            .map_err(UHIDErr::TryIOError)
+        let device = self.project();
+        device.handle.poll_write_ready_mut(cx).map(|guard_result| {
+            guard_result.and_then(|mut guard| loop {
+                match guard.try_io(|handle| handle.get_mut().write(&event)) {
+                    Ok(res) => break res.map(|_| ()),
+                    Err(_) => continue,
+                }
+            })
+        })
     }
 }
 
 impl UHIDDevice<File> {
     /// Opens the character misc-device at /dev/uhid
-    pub async fn create(params: CreateParams) -> Result<UHIDDevice<File>, UHIDErr> {
+    pub async fn create(params: CreateParams) -> io::Result<UHIDDevice<File>> {
         UHIDDevice::create_with_path(params, Path::new("/dev/uhid")).await
     }
     pub async fn create_with_path(
         params: CreateParams,
         path: &Path,
-    ) -> Result<UHIDDevice<File>, UHIDErr> {
+    ) -> io::Result<UHIDDevice<File>> {
         let mut options = OpenOptions::new();
         options.read(true);
         options.write(true);
         if cfg!(unix) {
             options.custom_flags(libc::O_RDWR | libc::O_CLOEXEC | libc::O_NONBLOCK);
         }
-        let fd = options.open(path).map_err(UHIDErr::IOError)?;
+        let fd = options.open(path)?;
 
-        let mut handle = AsyncFd::new(fd).map_err(UHIDErr::IOError)?;
+        let mut handle = AsyncFd::new(fd)?;
         let event: [u8; UHID_EVENT_SIZE] = InputEvent::Create(params).into();
 
-        let mut gaurd = handle.writable_mut().await.map_err(UHIDErr::IOError)?;
-        let write_res = gaurd
-            .try_io(|handle| handle.get_mut().write_all(&event))
-            .map_err(UHIDErr::TryIOError)?;
-        // Propogate any errors returned by the write function
-        match write_res {
-            Ok(()) => Ok(UHIDDevice { handle }),
-            Err(e) => Err(UHIDErr::IOError(e)),
-        }
+        handle.writable_mut().await.and_then(|mut guard| loop {
+            match guard.try_io(|handle| handle.get_mut().write(&event)) {
+                Ok(res) => break res.map(|_| ()),
+                Err(_) => continue,
+            }
+        })?;
+
+        Ok(UHIDDevice { handle })
     }
 }

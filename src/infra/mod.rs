@@ -1,1 +1,1 @@
-pub mod ctap2;
+pub mod ctap2_uhid;
