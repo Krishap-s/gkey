@@ -32,7 +32,6 @@ stdenv.mkDerivation {
     pkgs.pkg-config
     rustPlatform.cargoSetupHook
     rustPlatform.bindgenHook
-    pkgs.cargo
     pkgs.autoconf
   ];
 

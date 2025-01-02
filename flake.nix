@@ -32,7 +32,7 @@
             rust.fromRustupToolchainFile ./rust-toolchain
           else
             rust.stable.latest.default.override {
-              extensions = [ "rust-src" "rustfmt" "rust-analyzer" "clippy"];
+              extensions = [ "rust-src" "rustfmt" "rust-analyzer" "clippy" ];
             };
       };
 
@@ -44,6 +44,8 @@
             glibcLocales
             # Used to create mock /dev/uhid 
             umockdev
+            nodejs
+            cargo-watch
           ];
 
           env = {
