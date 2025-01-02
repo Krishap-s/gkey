@@ -1,9 +1,8 @@
 use crate::ctap2::channel::*;
-use crate::{error, prelude::*};
-use std::io::{BufWriter, Write};
+use crate::prelude::*;
 use std::{collections, pin, u32};
 
-use passkey_transports::hid::{self, ChannelHandler, Command, Message};
+use passkey_transports::hid::{ChannelHandler, Command, Message};
 use pin_project::pin_project;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::signal::unix;
