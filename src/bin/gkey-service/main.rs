@@ -3,8 +3,6 @@ use tokio::{
     signal::unix::{signal, SignalKind},
 };
 
-use crate::infra::CTAP;
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sigint = signal(SignalKind::interrupt())?;

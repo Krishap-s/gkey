@@ -33,6 +33,8 @@ stdenv.mkDerivation {
     rustPlatform.cargoSetupHook
     rustPlatform.bindgenHook
     pkgs.autoconf
+    pkgs.cargo
+    pkgs.rustc
   ];
 
   configurePhase = ''

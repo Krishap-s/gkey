@@ -2,7 +2,7 @@ CARGO=cargo
 SRC=src/
 TARGET=target/
 RELEASE=$(TARGET)/release/
-MAIN_RS=$(SRC)/main.rs
+GKEY_SERVICE=$(SRC)/gkey-service/main.rs
 CARGO_TOML=Cargo.toml
 
 BINARY=gkey

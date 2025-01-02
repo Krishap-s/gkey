@@ -1,5 +1,5 @@
+use crate::prelude;
 use io::{Read, Write};
-use std::borrow::BorrowMut;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd;
@@ -71,11 +71,11 @@ impl<T: Read + Write + AsRawFd> AsyncWrite for UHIDDevice<T> {
         buf: &[u8],
     ) -> std::task::Poll<Result<usize, io::Error>> {
         let this = self.project();
-        let mut data: [u8; UHID_EVENT_SIZE] = InputEvent::Input { data: buf }.into();
+        let data: [u8; UHID_EVENT_SIZE] = InputEvent::Input { data: buf }.into();
         loop {
             let mut guard = ready!(this.handle.poll_read_ready_mut(cx))?;
 
-            match guard.try_io(|inner| inner.get_mut().write(&mut data)) {
+            match guard.try_io(|inner| inner.get_mut().write(&data)) {
                 Ok(Ok(size)) => return Poll::Ready(Ok(size)),
                 Ok(Err(err)) => return Poll::Ready(Err(err)),
                 Err(_would_block) => continue,
@@ -119,13 +119,13 @@ impl<T: Read + Write + AsRawFd> AsyncWrite for UHIDDevice<T> {
 
 impl UHIDDevice<File> {
     /// Opens the character misc-device at /dev/uhid
-    pub async fn create(params: CreateParams) -> io::Result<UHIDDevice<File>> {
+    pub async fn create(params: CreateParams) -> prelude::Result<UHIDDevice<File>> {
         UHIDDevice::create_with_path(params, Path::new("/dev/uhid")).await
     }
     pub async fn create_with_path(
         params: CreateParams,
         path: &Path,
-    ) -> io::Result<UHIDDevice<File>> {
+    ) -> prelude::Result<UHIDDevice<File>> {
         let mut options = OpenOptions::new();
         options.read(true);
         options.write(true);
@@ -140,7 +140,7 @@ impl UHIDDevice<File> {
             let mut guard = handle.writable_mut().await?;
             match guard.try_io(|inner| inner.get_mut().write(&event)) {
                 Ok(Ok(_)) => return Ok(UHIDDevice { handle }),
-                Ok(Err(err)) => return Err(err),
+                Ok(Err(err)) => return Err(prelude::Error::IO(err)),
                 Err(_would_block) => continue,
             }
         }

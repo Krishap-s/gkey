@@ -46,6 +46,7 @@
             umockdev
             nodejs
             cargo-watch
+            cargo
           ];
 
           env = {

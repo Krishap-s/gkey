@@ -1,8 +1,9 @@
+use crate::prelude::*;
 use std::fs::File;
 
 use uhid_virt::{Bus, CreateParams};
 
-use crate::utils::uhid::{UHIDDevice, UHIDErr};
+use crate::uhid::UHIDDevice;
 
 // HID Report Descriptor from http://www.usb.org/developers/hidpage/HUTRR48.pdf
 const REPORT_DESCRIPTOR: [u8; 34] = [
@@ -24,7 +25,7 @@ const REPORT_DESCRIPTOR: [u8; 34] = [
     0xc0, /*             End Collection                          */
 ];
 
-pub async fn create_ctap2_uhid_device() -> Result<UHIDDevice<File>, UHIDErr> {
+pub async fn create_ctap2_uhid_device() -> Result<UHIDDevice<File>> {
     let params = CreateParams {
         name: "Virtual CTAP2".to_string(),
         bus: Bus::USB,
