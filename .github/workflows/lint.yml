@@ -29,3 +29,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Building the project requires gtk4 libraries that do not exist in the super-linter container
           VALIDATE_RUST_CLIPPY: false
+          VALIDATE_JSCPD: false
