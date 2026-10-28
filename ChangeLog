@@ -1,5 +1,17 @@
 2026-10-28  Krishap  <krishapbusiness@gmail.com>
 
+	Support Rust 1.80, so that Cargo versions without edition 2024
+	support can build gkey.
+
+	* Cargo.toml (rust-version): Set to 1.80.
+	* Cargo.lock: Resolve dependency versions compatible with it,
+	notably tss-esapi 7.6 and zeroize 1.8.
+	* src/uhid.rs (UHIDDevice::create): Allow the deprecation of
+	AsyncFd::new.
+	* INSTALL: Update the Rust requirement.
+
+2026-10-28  Krishap  <krishapbusiness@gmail.com>
+
 	Implement a TPM backed FIDO2 authenticator.
 
 	* src/tpm.rs: New file.  Storage primary key, signing keys,

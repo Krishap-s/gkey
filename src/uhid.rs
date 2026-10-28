@@ -211,9 +211,12 @@ impl UHIDDevice {
             .write(true)
             .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK)
             .open(path)?;
-        let mut device = UHIDDevice {
-            handle: AsyncFd::new(file)?,
-        };
+        // Newer tokio versions deprecate AsyncFd::new in favour of an
+        // unsafe constructor that older ones lack.  It is sound here:
+        // the File owns its descriptor for as long as the AsyncFd.
+        #[allow(deprecated)]
+        let handle = AsyncFd::new(file)?;
+        let mut device = UHIDDevice { handle };
         device.write_event(&encode_create(params)?).await?;
         Ok(device)
     }

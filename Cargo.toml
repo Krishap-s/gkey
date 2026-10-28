@@ -2,7 +2,7 @@
 name = "gkey"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.80"
 authors = ["Krishap krishapbusiness@gmail.com"]
 license = "GPL-3.0-or-later"
 description = "A TPM backed FIDO2 passkey authenticator for GNU/Linux"
