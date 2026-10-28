@@ -29,6 +29,7 @@ target/
 # Autotools generated files
 Makefile
 configure
+configure~
 config.status
 config.log
 autom4te.cache/
