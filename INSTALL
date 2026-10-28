@@ -55,6 +55,11 @@ When installing under /usr/local, udev, systemd, polkit and D-Bus may
 not look in the default directories; installing with '--prefix=/usr'
 as shown above avoids the problem.
 
+Run 'make' as yourself before 'sudo make install': 'make install' does
+not run cargo again when the programs are up to date, but if it has to,
+cargo running as root uses root's home directory and rebuilds every
+dependency.
+
 The Makefile honours DESTDIR, and provides the standard targets
 'install-strip', 'uninstall', 'installcheck', 'info', 'html', 'pdf',
 'dist', 'clean', 'distclean' and 'maintainer-clean'.

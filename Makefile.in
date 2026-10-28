@@ -58,7 +58,11 @@ INSTALL_DATA = $(INSTALL) -m 644
 PYTHON3 = python3
 
 RELEASE = $(CARGO_TARGET_DIR)/release
-CARGO_BUILD = GKEY_STATE_DIR='$(statedir)' $(CARGO) build --release --manifest-path $(srcdir)/Cargo.toml \
+BINARIES = $(RELEASE)/gkey $(RELEASE)/gkey-service
+# Every cargo invocation must see the same environment, or cargo
+# rebuilds the crate each time it changes.
+CARGO_ENV = GKEY_STATE_DIR='$(statedir)'
+CARGO_BUILD = $(CARGO_ENV) $(CARGO) build --release --manifest-path $(srcdir)/Cargo.toml \
 	--target-dir $(CARGO_TARGET_DIR) $(CARGOFLAGS)
 
 DISTFILES = AUTHORS COPYING ChangeLog DESIGN.md INSTALL NEWS README.md \
@@ -73,8 +77,20 @@ DISTFILES = AUTHORS COPYING ChangeLog DESIGN.md INSTALL NEWS README.md \
 	distclean maintainer-clean check installcheck dist info dvi html pdf ps \
 	install-info install-dvi install-html install-pdf install-ps TAGS
 
-all: build gkey.service
+all: $(BINARIES) gkey.service
 
+# The binaries are real targets, so that 'make install' after 'make'
+# does not run cargo again; under sudo, cargo would use root's home
+# directory and rebuild everything.  cargo lists the sources of each
+# binary in a dependency file next to it.
+$(BINARIES): $(srcdir)/Cargo.toml $(srcdir)/Cargo.lock Makefile
+	$(CARGO_BUILD) --bins
+	touch $@
+
+-include $(RELEASE)/gkey.d
+-include $(RELEASE)/gkey-service.d
+
+# Run cargo whatever make thinks.
 build:
 	$(CARGO_BUILD) --bins
 
@@ -174,9 +190,12 @@ install-ps: ps
 
 # Runs the unit tests and, when swtpm is installed, the tests that
 # need a TPM against a temporary software TPM.
+# Tests are built in the release profile to reuse the dependencies
+# that 'make' built.
 check:
-	CARGO='$(CARGO)' CARGO_TARGET_DIR='$(CARGO_TARGET_DIR)' PYTHON3='$(PYTHON3)' \
-	  srcdir='$(srcdir)' $(SHELL) $(srcdir)/tests/run-tests.sh
+	$(CARGO_ENV) CARGO='$(CARGO)' CARGO_TARGET_DIR='$(CARGO_TARGET_DIR)' \
+	  CARGOFLAGS='$(CARGOFLAGS)' PYTHON3='$(PYTHON3)' srcdir='$(srcdir)' \
+	  $(SHELL) $(srcdir)/tests/run-tests.sh
 
 installcheck:
 	for p in $(DESTDIR)$(bindir)/gkey $(DESTDIR)$(sbindir)/gkey-service; do \
