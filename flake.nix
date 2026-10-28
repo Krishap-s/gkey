@@ -42,8 +42,12 @@
 
           buildInputs = with pkgs; [
             glibcLocales
-            # Used to create mock /dev/uhid 
+            # Used to create mock /dev/uhid
             umockdev
+            # Software TPM and tools for testing
+            swtpm
+            tpm2-tools
+            (python3.withPackages (ps: [ ps.fido2 ]))
             nodejs
             cargo-watch
             cargo

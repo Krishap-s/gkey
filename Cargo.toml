@@ -2,17 +2,30 @@
 name = "gkey"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85"
 authors = ["Krishap krishapbusiness@gmail.com"]
+license = "GPL-3.0-or-later"
+description = "A TPM backed FIDO2 passkey authenticator for GNU/Linux"
 
 [dependencies]
+aes-gcm = "0.10"
+ciborium = "0.2"
 env_logger = "0.11.5"
 libc = "0.2.161"
 log = "0.4.22"
-passkey-transports = "0.1.0"
-pin-project = "1.1.7"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+sha2 = "0.10"
 thiserror = "2.0.8"
-tokio = { version = "1.41.0", features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "signal"] }
-uhid-virt = "0.0.6"
+tokio = { version = "1.41.0", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tss-esapi = "7.6"
+zeroize = "1"
+
+[dev-dependencies]
+p256 = { version = "0.13", features = ["ecdsa"] }
 
 [[bin]]
 name = "gkey-service"
+
+[[bin]]
+name = "gkey"

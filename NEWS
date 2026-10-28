@@ -1,0 +1,24 @@
+gkey NEWS -- history of user-visible changes.
+
+* Noteworthy changes in release 0.1.0 (unreleased)
+
+** New features
+
+gkey-service presents a FIDO2 (CTAP 2.0) security key to the system
+through UHID.  It implements authenticatorMakeCredential,
+authenticatorGetAssertion, authenticatorGetNextAssertion,
+authenticatorGetInfo and authenticatorReset over CTAPHID, with
+keepalive and cancellation support.
+
+Credential private keys are ECC P-256 keys generated inside the TPM
+and bound to it.  The credential list is encrypted with a key sealed
+to the TPM.  TPM commands use a salted, encrypted session.
+
+The user is asked for consent with pinentry and verified with PAM, or
+with an external command given with --verify-command.
+
+New program gkey lists, inspects and deletes credentials.
+
+Both programs follow the GNU conventions for options, --help and
+--version.  The build system provides the standard GNU targets and a
+Texinfo manual.

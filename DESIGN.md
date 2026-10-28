@@ -1,38 +1,59 @@
-# Design Doc
+# Design
 
-## Dependencies
+## Components
 
-- polkit
-- GTK4
-- UHID linux kernel
-- Sqlite
+- `gkey-service` runs as the logged in user, normally as a systemd
+  user service.  It creates a virtual USB HID device through UHID that
+  web browsers recognise as a FIDO2 security key, and implements the
+  CTAPHID transport and the CTAP 2.0 commands on it.
+- `gkey` is a command line tool to list and delete credentials and to
+  describe the TPM and the keystore.
+- A GTK4 key management tool is planned.
 
-## How it works
+The CTAPHID engine (`src/ctaphid.rs`) runs on an asynchronous event
+loop.  CBOR requests are handed to the authenticator (`src/ctap2.rs`),
+which owns the TPM connection and runs on its own thread, so that
+keepalive messages and cancellation keep working while the
+authenticator waits for the TPM or for the user.
 
-- The application consists of mainly three components:
+## Root of trust
 
-  - a keystore stored each individual user's home directory
-  - a service that runs as an unpriviledged user
-  - GUI key management tool.
+All keys descend from a storage primary key (ECC P-256, restricted
+decryption) that the TPM derives from the seed of its owner hierarchy
+each time gkey connects.  Nothing is stored in TPM non-volatile memory.
 
-- The service on system startup creates a virtual HID device through UHID and listens on it.A CTAP relying party (for example browsers) communicates with the service through the virtual HID device.
+- Each credential is a P-256 signing key created by `TPM2_Create` under
+  the primary key, with `fixedTPM` and `fixedParent`.  Its wrapped
+  private area is stored in the keystore and loaded only to sign.
+- The keystore is encrypted with AES-256-GCM.  Its key comes from the
+  TPM's random number generator and is sealed to the TPM as a keyed
+  hash object.
+- Commands run in an HMAC session salted with the primary key, with
+  command and response parameter encryption.
+- The keystore records a digest of the primary public key, to report
+  a cleared or different TPM clearly.
 
-- Once the service receives a register or attest command through the virtual HID device, the service uses polkit o spawn a user authentication prompt.
+## Keystore
 
-- Once the user authenticates, the service receives enviroment variables through polkit using which the service can run a process as the authenticated user. This gives the ability to use multiple methods of authentication (fingerprint,kerberos,ldap,etc) through pam modules.
+A single CBOR file in `$XDG_DATA_HOME/gkey/keystore` holds the sealed
+key and the encrypted credential list.  It is replaced atomically on
+every change, and access is serialised with `flock` on
+`keystore.lock`, so `gkey` and `gkey-service` can run at the same time.
 
-- The service then uses the keystore stored in the user's home directory, to perform key creation/signing. A GTK4 GUI window is shown by the service for the user the select which key they want to use.
+Credential IDs are 16 random bytes.  Every credential, discoverable or
+not, is kept in the keystore, so credentials can be listed and deleted.
 
-- The GUI key management tool will be used to initialize the keystore, and gives an interface for the user to manage their keys.
+## User consent
 
-## Keystore Design
+User presence is a pinentry confirmation dialog.  User verification
+runs PAM (service `gkey`) for the user running the service, relaying
+PAM prompts through pinentry, so that passwords, fingerprint readers
+and other PAM modules can be used.  Alternatively an external command
+decides.
 
-- The keystore will be stored in a hidden folder in each user's home directory.
+## Future work
 
-- The folder will contain a GNUPGP keystore for on disk storage and a sqlite database to store metadata. The sqlite database is used instead of the default GNUPGP metadata because other forms of key storage can be used (For Example: TPM,etc)
-
-- The Sqlite database will be encrypted to prevent against file disclosure attacks. The encryption key will be derived from system and user environment variables through key derivation function. An additional user specified secret can be appended to the input of the key derivation function for additional confidentiality.
-
-## Implementation
-
--
+- PCR policies binding keys to the boot state
+- clientPIN and pinUvAuthToken (CTAP 2.1)
+- the hmac-secret and credProtect extensions
+- the GTK4 management tool

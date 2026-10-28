@@ -1,23 +1,216 @@
-CARGO=cargo
-SRC=src/
-TARGET=target/
-RELEASE=$(TARGET)/release/
-GKEY_SERVICE=$(SRC)/gkey-service/main.rs
-CARGO_TOML=Cargo.toml
+# Makefile for gkey.  Makefile is generated from Makefile.in by configure.
+#
+# Copyright (C) 2024, 2026 Krishap <krishapbusiness@gmail.com>
+#
+# This file is part of gkey.
+#
+# gkey is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# The targets follow the GNU Coding Standards, see
+# <https://www.gnu.org/prep/standards/html_node/Standard-Targets.html>.
 
-BINARY=gkey
-RELEASE_BINARY=$(RELEASE)/$(BINARY)
-$(BINARY): $(CARGO_TOML) $(MAIN_RS)
-	$(CARGO) build --release
+SHELL = /bin/sh
 
-all: $(RELEASE_BINARY)
+PACKAGE = @PACKAGE_TARNAME@
+VERSION = @PACKAGE_VERSION@
+distdir = $(PACKAGE)-$(VERSION)
 
-build: $(CARGO_TOML) $(MAIN_RS)
-	$(CARGO) build --release
+srcdir = @srcdir@
+abs_builddir = @abs_builddir@
+abs_srcdir = @abs_srcdir@
 
+prefix = @prefix@
+exec_prefix = @exec_prefix@
+bindir = @bindir@
+datarootdir = @datarootdir@
+datadir = @datadir@
+sysconfdir = @sysconfdir@
+infodir = @infodir@
+docdir = @docdir@
+htmldir = @htmldir@
+dvidir = @dvidir@
+pdfdir = @pdfdir@
+psdir = @psdir@
+systemduserunitdir = @systemduserunitdir@
+udevrulesdir = @udevrulesdir@
+modulesloaddir = @modulesloaddir@
+pamdir = @pamdir@
 
-install: $(RELEASE_BINARY)
-	install -d $(DESTDIR)@SBINDIR@
-	install -m 755 $(RELEASE_BINARY) ${DESTDIR}@SBINDIR@/$(BINARY)
+CARGO = @CARGO@
+CARGOFLAGS =
+CARGO_TARGET_DIR = $(abs_builddir)/target
+MAKEINFO = @MAKEINFO@
+TEXI2DVI = @TEXI2DVI@
+INSTALL_INFO = @INSTALL_INFO@
+DVIPS = dvips
+ETAGS = ctags -e
+INSTALL = install
+INSTALL_PROGRAM = $(INSTALL)
+INSTALL_DATA = $(INSTALL) -m 644
+PYTHON3 = python3
 
-#TODO:Add other targets required by GNU coding standards https://www.gnu.org/prep/standards/html_node/Standard-Targets.html
+PROGRAMS = gkey gkey-service
+RELEASE = $(CARGO_TARGET_DIR)/release
+CARGO_BUILD = $(CARGO) build --release --manifest-path $(srcdir)/Cargo.toml \
+	--target-dir $(CARGO_TARGET_DIR) $(CARGOFLAGS)
+
+DISTFILES = AUTHORS COPYING ChangeLog DESIGN.md INSTALL NEWS README.md \
+	Cargo.toml Cargo.lock Makefile.in configure configure.ac \
+	default.nix flake.nix flake.lock \
+	data/70-gkey.rules data/gkey.pam data/gkey-modules.conf data/gkey.service.in \
+	doc/gkey.texi doc/gkey.info doc/version.texi
+
+.PHONY: all build install install-strip installdirs uninstall clean mostlyclean \
+	distclean maintainer-clean check installcheck dist info dvi html pdf ps \
+	install-info install-dvi install-html install-pdf install-ps TAGS
+
+all: build gkey.service
+
+build:
+	$(CARGO_BUILD) --bins
+
+gkey.service: $(srcdir)/data/gkey.service.in Makefile
+	sed -e 's|@bindir[@]|$(bindir)|g' $(srcdir)/data/gkey.service.in > $@.tmp
+	mv $@.tmp $@
+
+installdirs:
+	mkdir -p $(DESTDIR)$(bindir) $(DESTDIR)$(systemduserunitdir) \
+	  $(DESTDIR)$(udevrulesdir) $(DESTDIR)$(modulesloaddir) $(DESTDIR)$(pamdir)
+
+install: all installdirs
+	for p in $(PROGRAMS); do \
+	  $(INSTALL_PROGRAM) $(RELEASE)/$$p $(DESTDIR)$(bindir)/$$p || exit 1; \
+	done
+	$(INSTALL_DATA) gkey.service $(DESTDIR)$(systemduserunitdir)/gkey.service
+	$(INSTALL_DATA) $(srcdir)/data/70-gkey.rules $(DESTDIR)$(udevrulesdir)/70-gkey.rules
+	$(INSTALL_DATA) $(srcdir)/data/gkey-modules.conf $(DESTDIR)$(modulesloaddir)/gkey.conf
+	$(INSTALL_DATA) $(srcdir)/data/gkey.pam $(DESTDIR)$(pamdir)/gkey
+	@if test -f doc/gkey.info || test -f $(srcdir)/doc/gkey.info; then \
+	  $(MAKE) install-info; \
+	fi
+
+install-strip:
+	$(MAKE) INSTALL_PROGRAM='$(INSTALL_PROGRAM) -s' install
+
+uninstall:
+	for p in $(PROGRAMS); do rm -f $(DESTDIR)$(bindir)/$$p; done
+	rm -f $(DESTDIR)$(systemduserunitdir)/gkey.service
+	rm -f $(DESTDIR)$(udevrulesdir)/70-gkey.rules
+	rm -f $(DESTDIR)$(modulesloaddir)/gkey.conf
+	rm -f $(DESTDIR)$(pamdir)/gkey
+	-$(INSTALL_INFO) --delete --info-dir=$(DESTDIR)$(infodir) \
+	  $(DESTDIR)$(infodir)/gkey.info 2>/dev/null
+	rm -f $(DESTDIR)$(infodir)/gkey.info
+
+# Documentation.
+
+TEXI_DEPS = $(srcdir)/doc/gkey.texi doc/version.texi
+
+doc/version.texi: $(srcdir)/Cargo.toml
+	mkdir -p doc
+	{ echo '@set VERSION $(VERSION)'; \
+	  echo "@set UPDATED `date -u -r $(srcdir)/doc/gkey.texi '+%B %Y' 2>/dev/null || date -u '+%B %Y'`"; \
+	} > $@
+
+info: doc/gkey.info
+doc/gkey.info: $(TEXI_DEPS)
+	$(MAKEINFO) -I doc --no-split -o $@ $(srcdir)/doc/gkey.texi
+
+html: doc/gkey.html
+doc/gkey.html: $(TEXI_DEPS)
+	$(MAKEINFO) -I doc --html --no-split -o $@ $(srcdir)/doc/gkey.texi
+
+dvi: doc/gkey.dvi
+doc/gkey.dvi: $(TEXI_DEPS)
+	cd doc && $(TEXI2DVI) --batch -o gkey.dvi $(abs_srcdir)/doc/gkey.texi
+
+pdf: doc/gkey.pdf
+doc/gkey.pdf: $(TEXI_DEPS)
+	cd doc && $(TEXI2DVI) --batch --pdf -o gkey.pdf $(abs_srcdir)/doc/gkey.texi
+
+ps: doc/gkey.ps
+doc/gkey.ps: doc/gkey.dvi
+	$(DVIPS) -o $@ doc/gkey.dvi
+
+install-info: info
+	mkdir -p $(DESTDIR)$(infodir)
+	if test -f doc/gkey.info; then d=doc; else d=$(srcdir)/doc; fi; \
+	$(INSTALL_DATA) $$d/gkey.info $(DESTDIR)$(infodir)/gkey.info
+	-$(INSTALL_INFO) --info-dir=$(DESTDIR)$(infodir) $(DESTDIR)$(infodir)/gkey.info
+
+install-html: html
+	mkdir -p $(DESTDIR)$(htmldir)
+	$(INSTALL_DATA) doc/gkey.html $(DESTDIR)$(htmldir)/gkey.html
+
+install-dvi: dvi
+	mkdir -p $(DESTDIR)$(dvidir)
+	$(INSTALL_DATA) doc/gkey.dvi $(DESTDIR)$(dvidir)/gkey.dvi
+
+install-pdf: pdf
+	mkdir -p $(DESTDIR)$(pdfdir)
+	$(INSTALL_DATA) doc/gkey.pdf $(DESTDIR)$(pdfdir)/gkey.pdf
+
+install-ps: ps
+	mkdir -p $(DESTDIR)$(psdir)
+	$(INSTALL_DATA) doc/gkey.ps $(DESTDIR)$(psdir)/gkey.ps
+
+# Testing.
+
+# Runs the unit tests and, when swtpm is installed, the tests that
+# need a TPM against a temporary software TPM.
+check:
+	CARGO='$(CARGO)' CARGO_TARGET_DIR='$(CARGO_TARGET_DIR)' PYTHON3='$(PYTHON3)' \
+	  srcdir='$(srcdir)' $(SHELL) $(srcdir)/tests/run-tests.sh
+
+installcheck:
+	for p in $(PROGRAMS); do \
+	  $(DESTDIR)$(bindir)/$$p --version > /dev/null || exit 1; \
+	  $(DESTDIR)$(bindir)/$$p --help > /dev/null || exit 1; \
+	done
+
+# Distribution.
+
+dist: info
+	rm -rf $(distdir)
+	mkdir -p $(distdir)/data $(distdir)/doc $(distdir)/tests
+	cp -R $(srcdir)/src $(srcdir)/examples $(distdir)/
+	cp $(srcdir)/tests/*.rs $(srcdir)/tests/*.py $(srcdir)/tests/*.sh $(distdir)/tests/
+	for f in $(DISTFILES); do \
+	  if test -f $$f; then cp $$f $(distdir)/$$f; \
+	  else cp $(srcdir)/$$f $(distdir)/$$f; fi || exit 1; \
+	done
+	tar chof - $(distdir) | gzip -9 -c > $(distdir).tar.gz
+	rm -rf $(distdir)
+
+TAGS:
+	$(ETAGS) -R -f TAGS $(srcdir)/src $(srcdir)/examples $(srcdir)/tests
+
+# Cleaning.
+
+mostlyclean:
+	rm -f gkey.service gkey.service.tmp
+	rm -f doc/gkey.html doc/gkey.dvi doc/gkey.pdf doc/gkey.ps
+	rm -f doc/*.aux doc/*.cp doc/*.cps doc/*.fn doc/*.ky doc/*.log doc/*.pg \
+	  doc/*.toc doc/*.tp doc/*.vr
+
+clean: mostlyclean
+	$(CARGO) clean --manifest-path $(srcdir)/Cargo.toml --target-dir $(CARGO_TARGET_DIR)
+	rm -f $(distdir).tar.gz
+
+distclean: clean
+	rm -f Makefile config.status config.log TAGS
+	rm -rf autom4te.cache
+
+maintainer-clean: distclean
+	@echo 'This command is intended for maintainers to use; it'
+	@echo 'deletes files that may need special tools to rebuild.'
+	rm -f configure doc/gkey.info doc/version.texi
+
+Makefile: $(srcdir)/Makefile.in config.status
+	./config.status Makefile
+
+config.status: $(srcdir)/configure
+	./config.status --recheck

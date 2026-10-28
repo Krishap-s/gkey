@@ -22,17 +22,17 @@ stdenv.mkDerivation {
     LOCALE_ARCHIVE= "${pkgs.glibcLocales}/lib/locale/locale-archive";
   };  
 
-  buildInputs = with pkgs;[
-    gtk4
-    glib
+  buildInputs = with pkgs; [
+    tpm2-tss
+    linux-pam
   ];
 
 
   nativeBuildInputs = [ 
     pkgs.pkg-config
     rustPlatform.cargoSetupHook
-    rustPlatform.bindgenHook
     pkgs.autoconf
+    pkgs.texinfo
     pkgs.cargo
     pkgs.rustc
   ];
@@ -42,10 +42,15 @@ stdenv.mkDerivation {
     ./configure --prefix=$out
   '';
 
+  postBuild = ''
+    make info
+  '';
+
 
   meta = with pkgs; {
     homepage = "https://github.com/Krishap-s/gkey";
-    description = "An On Device Fido Platform Authenticator For The GNU Project ";
-    license = lib.licenses.gpl3;
+    description = "A TPM backed FIDO2 passkey authenticator";
+    license = lib.licenses.gpl3Plus;
+    platforms = lib.platforms.linux;
   };
 }

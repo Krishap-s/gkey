@@ -1,0 +1,29 @@
+2026-10-28  Krishap  <krishapbusiness@gmail.com>
+
+	Implement a TPM backed FIDO2 authenticator.
+
+	* src/tpm.rs: New file.  Storage primary key, signing keys,
+	sealing, salted parameter encrypted session.
+	* src/keystore.rs: New file.  Credential list encrypted with a
+	TPM sealed AES-256-GCM key.
+	* src/ctaphid.rs: New file.  CTAPHID transport.
+	* src/ctap2.rs: New file.  CTAP 2.0 authenticator.
+	* src/verify.rs: New file.  User presence and verification with
+	pinentry, PAM, or an external command.
+	* src/getopt.rs: New file.  GNU style option parsing.
+	* src/uhid.rs: Rewrite without generated bindings.
+	* src/bin/gkey-service/main.rs: Serve the authenticator.
+	* src/bin/gkey/main.rs: New program to manage credentials.
+	* src/ctap2/, src/infra/, src/utils/: Remove.
+	* tests/authenticator.rs, tests/fido2-client.py:
+	* tests/run-tests.sh, examples/socket-authenticator.rs: New files.
+	* doc/gkey.texi: New manual.
+	* data/: systemd user unit, udev rule, PAM configuration and
+	kernel module list.
+	* configure.ac, Makefile.in: Check for tpm2-tss and PAM; provide
+	the standard GNU targets.
+	* LICENSE: Rename to COPYING.
+	* AUTHORS, INSTALL, NEWS, ChangeLog: New files.
+	* Cargo.toml: Replace uhid-virt and passkey-transports with
+	tss-esapi, ciborium and aes-gcm.
+	* default.nix, flake.nix: Build with tpm2-tss and PAM.

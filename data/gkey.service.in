@@ -1,0 +1,16 @@
+# systemd user unit for gkey-service.
+#
+# Enable it with: systemctl --user enable --now gkey.service
+
+[Unit]
+Description=gkey TPM backed FIDO2 authenticator
+Documentation=info:gkey
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=@bindir@/gkey-service
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

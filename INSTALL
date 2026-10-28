@@ -1,0 +1,55 @@
+Installation Instructions for gkey
+**********************************
+
+Requirements
+============
+
+  * Rust 1.85 or later, with cargo
+  * a C compiler and pkg-config
+  * the TPM2 Software Stack, tpm2-tss 2.4 or later, with development
+    files (tss2-esys, tss2-tctildr, tss2-mu)
+  * Linux-PAM development files
+  * GNU Autoconf, when building from the version control repository
+  * Texinfo, to build the manual
+
+At run time gkey needs a TPM 2.0 reachable through /dev/tpmrm0, the
+uhid kernel module, and a pinentry program such as the ones
+distributed with GnuPG.
+
+For 'make check', swtpm is needed to run the tests that use a TPM, and
+python-fido2 1.x to run the interoperability test.
+
+Basic Installation
+==================
+
+     autoconf             # only when building from the repository
+     ./configure
+     make
+     make check
+     make install
+
+'configure' accepts the usual options, such as '--prefix=DIR' (default
+'/usr/local'), and in addition:
+
+'--with-systemduserunitdir=DIR'
+     Where to install the systemd user unit (PREFIX/lib/systemd/user).
+
+'--with-udevrulesdir=DIR'
+     Where to install the udev rule (PREFIX/lib/udev/rules.d).
+
+'--with-modulesloaddir=DIR'
+     Where to install the kernel module list (PREFIX/lib/modules-load.d).
+
+'--with-pamdir=DIR'
+     Where to install the PAM configuration (SYSCONFDIR/pam.d).
+
+When installing under /usr/local, udev, systemd and PAM may not look
+in the default directories; pass for instance
+'--with-udevrulesdir=/etc/udev/rules.d --with-pamdir=/etc/pam.d'.
+
+The Makefile honours DESTDIR, and provides the standard targets
+'install-strip', 'uninstall', 'installcheck', 'info', 'html', 'pdf',
+'dist', 'clean', 'distclean' and 'maintainer-clean'.
+
+After installation, follow the "Setting up" chapter of the manual
+('info gkey').
