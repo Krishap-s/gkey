@@ -1,16 +1,50 @@
-# systemd user unit for gkey-service.
+# systemd system unit for gkey-service.
 #
-# Enable it with: systemctl --user enable --now gkey.service
+# Enable it with: systemctl enable --now gkey.service
 
 [Unit]
 Description=gkey TPM backed FIDO2 authenticator
 Documentation=info:gkey
-PartOf=graphical-session.target
-After=graphical-session.target
+Requires=dbus.socket
+After=dbus.socket systemd-logind.service systemd-modules-load.service
 
 [Service]
-ExecStart=@bindir@/gkey-service
+Type=dbus
+BusName=io.github.krishap_s.Gkey1
+ExecStart=@sbindir@/gkey-service
 Restart=on-failure
 
+# The service account alone may use the TPM and create HID devices.
+User=gkey
+Group=gkey
+SupplementaryGroups=tss
+StateDirectory=gkey
+StateDirectoryMode=0700
+UMask=0077
+
+DevicePolicy=closed
+DeviceAllow=/dev/uhid rw
+DeviceAllow=/dev/tpmrm0 rw
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
 [Install]
-WantedBy=graphical-session.target
+WantedBy=multi-user.target

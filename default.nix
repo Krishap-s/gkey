@@ -24,7 +24,6 @@ stdenv.mkDerivation {
 
   buildInputs = with pkgs; [
     tpm2-tss
-    linux-pam
   ];
 
 
@@ -39,7 +38,7 @@ stdenv.mkDerivation {
 
   configurePhase = ''
     autoconf
-    ./configure --prefix=$out
+    ./configure --prefix=$out --localstatedir=/var
   '';
 
   postBuild = ''

@@ -17,17 +17,21 @@
 
 //! The on disk credential store.
 //!
-//! The store is a single CBOR file in the user's data directory
-//! (`$XDG_DATA_HOME/gkey/keystore`).  It holds:
+//! gkey-service keeps one store per user, in `STATE/UID/keystore`
+//! where STATE is the service's state directory (normally
+//! `/var/lib/gkey`), readable only by the account the service runs
+//! as.  The store is a single CBOR file holding:
 //!
-//! * a 256-bit AES key sealed to the TPM, which only this TPM can
-//!   unseal;
+//! * the user's TPM user key (see [`crate::tpm`]) and its random
+//!   password;
+//! * a 256-bit AES key sealed under the user key;
 //! * the list of credentials, encrypted and authenticated with that
-//!   key using AES-256-GCM.
+//!   AES key using AES-256-GCM.
 //!
-//! Each credential carries its TPM wrapped private key, so the file is
-//! worthless on another machine, and it cannot be read or modified
-//! without detection on this one without access to the TPM.
+//! Each credential carries its TPM wrapped private key, created under
+//! the user key.  The file is worthless on another machine, and on
+//! this one using it requires both TPM access and the user key's
+//! password, which only the service can read.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -42,13 +46,21 @@ use serde_bytes::ByteBuf;
 use zeroize::Zeroizing;
 
 use crate::prelude::*;
-use crate::tpm::{SealedBlob, Tpm};
+use crate::tpm::{Blob, SigningKey, Tpm, USER_AUTH_SIZE};
 
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 const KEYSTORE_FILE: &str = "keystore";
 const LOCK_FILE: &str = "keystore.lock";
 /// Additional authenticated data binding the ciphertext to its use.
-const AAD: &[u8] = b"gkey credential list v1";
+const AAD: &[u8] = b"gkey credential list v2";
+
+/// State directory used when neither `--state-dir` nor the
+/// `STATE_DIRECTORY` environment variable (set by systemd) gives one.
+/// `make` sets it from `localstatedir`.
+pub const DEFAULT_STATE_DIR: &str = match option_env!("GKEY_STATE_DIR") {
+    Some(dir) => dir,
+    None => "/var/lib/gkey",
+};
 
 /// A WebAuthn credential.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -78,6 +90,13 @@ impl Credential {
     pub fn id_hex(&self) -> String {
         hex(&self.id)
     }
+
+    fn key(&self) -> Blob {
+        Blob {
+            public: self.tpm_public.to_vec(),
+            private: self.tpm_private.to_vec(),
+        }
+    }
 }
 
 /// Format `bytes` as lower case hexadecimal.
@@ -90,6 +109,10 @@ struct KeystoreFile {
     version: u32,
     /// Fingerprint of the TPM primary key the store was created with.
     primary: ByteBuf,
+    user_public: ByteBuf,
+    user_private: ByteBuf,
+    /// Password of the user key.
+    user_auth: ByteBuf,
     sealed_public: ByteBuf,
     sealed_private: ByteBuf,
     nonce: ByteBuf,
@@ -101,27 +124,34 @@ struct KeystoreFile {
 pub struct Keystore {
     dir: PathBuf,
     _lock: File,
-    sealed: SealedBlob,
+    user_key: Blob,
+    user_auth: Zeroizing<Vec<u8>>,
+    sealed: Blob,
     primary: [u8; 32],
     key: Zeroizing<Vec<u8>>,
     pub credentials: Vec<Credential>,
 }
 
-/// Return the default keystore directory: `$GKEY_KEYSTORE`, or
-/// `$XDG_DATA_HOME/gkey`, or `$HOME/.local/share/gkey`.
-pub fn default_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("GKEY_KEYSTORE").filter(|d| !d.is_empty()) {
-        return Ok(PathBuf::from(dir));
+/// Return the state directory: `explicit` if given, otherwise the
+/// first directory in `$STATE_DIRECTORY`, otherwise
+/// [`DEFAULT_STATE_DIR`].
+pub fn state_dir(explicit: Option<PathBuf>) -> PathBuf {
+    if let Some(dir) = explicit {
+        return dir;
     }
-    if let Some(dir) = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
-        return Ok(PathBuf::from(dir).join("gkey"));
+    if let Some(dirs) = std::env::var_os("STATE_DIRECTORY") {
+        if let Some(first) = std::env::split_paths(&dirs).next() {
+            if !first.as_os_str().is_empty() {
+                return first;
+            }
+        }
     }
-    match std::env::var_os("HOME").filter(|d| !d.is_empty()) {
-        Some(home) => Ok(PathBuf::from(home).join(".local/share/gkey")),
-        None => Err(Error::Keystore(
-            "cannot determine the keystore directory; set HOME or XDG_DATA_HOME".into(),
-        )),
-    }
+    PathBuf::from(DEFAULT_STATE_DIR)
+}
+
+/// The directory holding the keystore of the user `uid`.
+pub fn user_dir(state: &Path, uid: u32) -> PathBuf {
+    state.join(uid.to_string())
 }
 
 fn lock(dir: &Path) -> Result<File> {
@@ -163,11 +193,16 @@ impl Keystore {
                 dir.display()
             )));
         }
+        let user_auth = Zeroizing::new(tpm.random(USER_AUTH_SIZE)?);
+        let user_key = tpm.create_user_key(&user_auth)?;
         let key = Zeroizing::new(tpm.random(32)?);
-        let sealed = tpm.seal(&key)?;
+        let sealed =
+            tpm.with_user_key(&user_key, &user_auth, |tpm, parent| tpm.seal(parent, &key))?;
         let mut keystore = Keystore {
             dir: dir.to_path_buf(),
             _lock: lock,
+            user_key,
+            user_auth,
             sealed,
             primary: tpm.fingerprint(),
             key,
@@ -203,11 +238,18 @@ impl Keystore {
                     .into(),
             ));
         }
-        let sealed = SealedBlob {
+        let user_key = Blob {
+            public: file.user_public.into_vec(),
+            private: file.user_private.into_vec(),
+        };
+        let user_auth = Zeroizing::new(file.user_auth.into_vec());
+        let sealed = Blob {
             public: file.sealed_public.into_vec(),
             private: file.sealed_private.into_vec(),
         };
-        let key = tpm.unseal(&sealed)?;
+        let key = tpm.with_user_key(&user_key, &user_auth, |tpm, parent| {
+            tpm.unseal(parent, &sealed)
+        })?;
         let cipher = Aes256Gcm::new_from_slice(&key)
             .map_err(|_| Error::Keystore("sealed key has the wrong size".into()))?;
         let nonce: [u8; 12] = file
@@ -231,6 +273,8 @@ impl Keystore {
         Ok(Keystore {
             dir: dir.to_path_buf(),
             _lock: lock,
+            user_key,
+            user_auth,
             sealed,
             primary: tpm.fingerprint(),
             key,
@@ -270,6 +314,9 @@ impl Keystore {
         let file = KeystoreFile {
             version: FORMAT_VERSION,
             primary: ByteBuf::from(self.primary.to_vec()),
+            user_public: ByteBuf::from(self.user_key.public.clone()),
+            user_private: ByteBuf::from(self.user_key.private.clone()),
+            user_auth: ByteBuf::from(self.user_auth.to_vec()),
             sealed_public: ByteBuf::from(self.sealed.public.clone()),
             sealed_private: ByteBuf::from(self.sealed.private.clone()),
             nonce: ByteBuf::from(nonce.to_vec()),
@@ -292,6 +339,25 @@ impl Keystore {
         Ok(())
     }
 
+    /// Generate the key of a new credential under the user key.
+    pub fn create_credential_key(&self, tpm: &mut Tpm) -> Result<SigningKey> {
+        tpm.with_user_key(&self.user_key, &self.user_auth, |tpm, parent| {
+            tpm.create_signing_key(parent)
+        })
+    }
+
+    /// Sign the SHA-256 `digest` with the key of `credential`.
+    pub fn sign(
+        &self,
+        tpm: &mut Tpm,
+        credential: &Credential,
+        digest: &[u8; 32],
+    ) -> Result<Vec<u8>> {
+        tpm.with_user_key(&self.user_key, &self.user_auth, |tpm, parent| {
+            tpm.sign(parent, &credential.key(), digest)
+        })
+    }
+
     /// Find a credential by ID.
     pub fn find(&self, id: &[u8]) -> Option<usize> {
         self.credentials.iter().position(|c| c.id.as_slice() == id)
@@ -311,8 +377,5 @@ impl Keystore {
 }
 
 fn no_keystore(dir: &Path) -> Error {
-    Error::Keystore(format!(
-        "no keystore in '{}'; run 'gkey init' to create one",
-        dir.display()
-    ))
+    Error::Keystore(format!("no keystore in '{}'", dir.display()))
 }

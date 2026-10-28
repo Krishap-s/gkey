@@ -26,7 +26,8 @@
 //! [`crate::verify`]) and does not implement clientPIN.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::os::unix::fs::DirBuilderExt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -35,9 +36,12 @@ use ciborium::Value;
 use serde_bytes::ByteBuf;
 use sha2::{Digest, Sha256};
 
-use crate::ctaphid::{Request, STATUS_PROCESSING, STATUS_UPNEEDED};
-use crate::keystore::{Credential, Keystore};
+use tokio::sync::oneshot;
+
+use crate::ctaphid::{Request, Submit, STATUS_PROCESSING, STATUS_UPNEEDED};
+use crate::keystore::{self, Credential, Keystore};
 use crate::prelude::*;
+use crate::system::{User, UserSource};
 use crate::tpm::Tpm;
 use crate::verify::{Kind, Outcome, Verifier};
 
@@ -226,6 +230,7 @@ fn now() -> u64 {
 
 /// State kept between getAssertion and getNextAssertion.
 struct PendingAssertions {
+    uid: u32,
     rp_id: String,
     client_data_hash: [u8; 32],
     flags: u8,
@@ -242,16 +247,20 @@ pub struct RequestContext<'a> {
 /// The authenticator state machine.
 pub struct Authenticator {
     tpm: Tpm,
-    keystore: PathBuf,
+    state_dir: PathBuf,
+    users: UserSource,
     verifier: Verifier,
     pending: Option<PendingAssertions>,
 }
 
 impl Authenticator {
-    pub fn new(tpm: Tpm, keystore: PathBuf, verifier: Verifier) -> Self {
+    /// Create an authenticator keeping the keystores of the users in
+    /// `state_dir`, serving the users that `users` designates.
+    pub fn new(tpm: Tpm, state_dir: PathBuf, users: UserSource, verifier: Verifier) -> Self {
         Authenticator {
             tpm,
-            keystore,
+            state_dir,
+            users,
             verifier,
             pending: None,
         }
@@ -301,9 +310,27 @@ impl Authenticator {
         }
     }
 
-    fn consent(&self, kind: Kind, description: &str, ctx: &RequestContext) -> CtapResult<()> {
+    /// The user to process the current request for.
+    fn user(&self) -> CtapResult<User> {
+        match self.users.current() {
+            Ok(Some(user)) => Ok(user),
+            Ok(None) => {
+                log::warn!("request refused: nobody is using the seat");
+                Err(CTAP2_ERR_OPERATION_DENIED)
+            }
+            Err(err) => Err(internal(err)),
+        }
+    }
+
+    fn consent(
+        &self,
+        kind: Kind,
+        description: &str,
+        user: &User,
+        ctx: &RequestContext,
+    ) -> CtapResult<()> {
         ctx.status.store(STATUS_UPNEEDED, Ordering::Relaxed);
-        let outcome = self.verifier.ask(kind, description, ctx.cancel);
+        let outcome = self.verifier.ask(kind, description, user, ctx.cancel);
         ctx.status.store(STATUS_PROCESSING, Ordering::Relaxed);
         match outcome {
             Ok(Outcome::Granted) => Ok(()),
@@ -316,17 +343,22 @@ impl Authenticator {
         }
     }
 
-    fn open_keystore(&mut self) -> CtapResult<Keystore> {
-        Keystore::open_or_create(&self.keystore, &mut self.tpm).map_err(internal)
+    fn user_dir(&self, uid: u32) -> PathBuf {
+        keystore::user_dir(&self.state_dir, uid)
+    }
+
+    fn open_keystore(&mut self, user: &User) -> CtapResult<Keystore> {
+        let dir = self.user_dir(user.uid);
+        Keystore::open_or_create(&dir, &mut self.tpm).map_err(internal)
     }
 
     /// Handle the zero length pinAuth that platforms send to make the
     /// user pick an authenticator (CTAP 2.0, section 5.1, step 2).
-    fn pin_auth(&self, value: Option<&Value>, ctx: &RequestContext) -> CtapResult<()> {
+    fn pin_auth(&self, value: Option<&Value>, user: &User, ctx: &RequestContext) -> CtapResult<()> {
         match value {
             None => Ok(()),
             Some(value) if as_bytes(value)?.is_empty() => {
-                self.consent(Kind::Presence, "Use gkey as your security key?", ctx)?;
+                self.consent(Kind::Presence, "Use gkey as your security key?", user, ctx)?;
                 Err(CTAP2_ERR_PIN_NOT_SET)
             }
             Some(_) => Err(CTAP2_ERR_PIN_AUTH_INVALID),
@@ -341,17 +373,19 @@ impl Authenticator {
         // Only needed for attestation formats other than "none".
         let _client_data_hash = client_data_hash(get_int(parameters, 1))?;
         let rp = as_map(get_int(parameters, 2).ok_or(CTAP2_ERR_MISSING_PARAMETER)?)?;
-        let user = as_map(get_int(parameters, 3).ok_or(CTAP2_ERR_MISSING_PARAMETER)?)?;
+        let user_entity = as_map(get_int(parameters, 3).ok_or(CTAP2_ERR_MISSING_PARAMETER)?)?;
         let algorithms = as_array(get_int(parameters, 4).ok_or(CTAP2_ERR_MISSING_PARAMETER)?)?;
         let exclude = get_int(parameters, 5).map(credential_ids).transpose()?;
         let options = options(get_int(parameters, 7))?;
-        self.pin_auth(get_int(parameters, 8), ctx)?;
+        let user = self.user()?;
+        self.pin_auth(get_int(parameters, 8), &user, ctx)?;
 
         let rp_id = as_text(get_text(rp, "id").ok_or(CTAP2_ERR_MISSING_PARAMETER)?)?.to_string();
         let rp_name = optional_text(rp, "name")?;
-        let user_id = as_bytes(get_text(user, "id").ok_or(CTAP2_ERR_MISSING_PARAMETER)?)?.to_vec();
-        let user_name = optional_text(user, "name")?;
-        let user_display_name = optional_text(user, "displayName")?;
+        let user_id =
+            as_bytes(get_text(user_entity, "id").ok_or(CTAP2_ERR_MISSING_PARAMETER)?)?.to_vec();
+        let user_name = optional_text(user_entity, "name")?;
+        let user_display_name = optional_text(user_entity, "displayName")?;
 
         let mut supported = false;
         for algorithm in algorithms {
@@ -373,7 +407,7 @@ impl Authenticator {
         }
 
         if let Some(exclude) = exclude {
-            let keystore = self.open_keystore()?;
+            let keystore = self.open_keystore(&user)?;
             let excluded = exclude.iter().any(|id| {
                 keystore
                     .find(id)
@@ -384,6 +418,7 @@ impl Authenticator {
                 self.consent(
                     Kind::Presence,
                     &format!("You already have a passkey for {rp_id} in gkey."),
+                    &user,
                     ctx,
                 )?;
                 return Err(CTAP2_ERR_CREDENTIAL_EXCLUDED);
@@ -400,9 +435,12 @@ impl Authenticator {
         } else {
             Kind::Presence
         };
-        self.consent(kind, &description, ctx)?;
+        self.consent(kind, &description, &user, ctx)?;
 
-        let key = self.tpm.create_signing_key().map_err(internal)?;
+        let mut keystore = self.open_keystore(&user)?;
+        let key = keystore
+            .create_credential_key(&mut self.tpm)
+            .map_err(internal)?;
         let id = self.tpm.random(CREDENTIAL_ID_SIZE).map_err(internal)?;
         let mut public_key = Vec::with_capacity(65);
         public_key.push(0x04);
@@ -423,7 +461,6 @@ impl Authenticator {
             created: now(),
         };
 
-        let mut keystore = self.open_keystore()?;
         if options.rk {
             // A new discoverable credential replaces the one held for
             // the same account.
@@ -434,8 +471,9 @@ impl Authenticator {
         keystore.credentials.push(credential);
         keystore.save(&mut self.tpm).map_err(internal)?;
         log::info!(
-            "created credential {} for {rp_id}",
-            crate::keystore::hex(&id)
+            "created credential {} for {rp_id} for user {}",
+            keystore::hex(&id),
+            user.uid
         );
 
         let mut flags = FLAG_UP | FLAG_AT;
@@ -468,12 +506,13 @@ impl Authenticator {
         let client_data_hash = client_data_hash(get_int(parameters, 2))?;
         let allow = get_int(parameters, 3).map(credential_ids).transpose()?;
         let options = options(get_int(parameters, 5))?;
-        self.pin_auth(get_int(parameters, 6), ctx)?;
+        let user = self.user()?;
+        self.pin_auth(get_int(parameters, 6), &user, ctx)?;
         if options.rk {
             return Err(CTAP2_ERR_INVALID_OPTION);
         }
 
-        let keystore = self.open_keystore()?;
+        let keystore = self.open_keystore(&user)?;
         let allow = allow.filter(|ids| !ids.is_empty());
         let mut matches: Vec<&Credential> = match &allow {
             Some(ids) => ids
@@ -509,6 +548,7 @@ impl Authenticator {
             self.consent(
                 Kind::Verification,
                 &format!("Sign in to {rp_id}?\n\nAccount: {account}"),
+                &user,
                 ctx,
             )?;
             flags |= FLAG_UP | FLAG_UV;
@@ -516,12 +556,14 @@ impl Authenticator {
             self.consent(
                 Kind::Presence,
                 &format!("Sign in to {rp_id}?\n\nAccount: {account}"),
+                &user,
                 ctx,
             )?;
             flags |= FLAG_UP;
         }
 
         let mut pending = PendingAssertions {
+            uid: user.uid,
             rp_id,
             client_data_hash,
             flags,
@@ -542,7 +584,7 @@ impl Authenticator {
         let Some(mut pending) = self.pending.take() else {
             return Err(CTAP2_ERR_NOT_ALLOWED);
         };
-        if pending.started.elapsed() > NEXT_ASSERTION_TIMEOUT {
+        if pending.started.elapsed() > NEXT_ASSERTION_TIMEOUT || self.user()?.uid != pending.uid {
             return Err(CTAP2_ERR_NOT_ALLOWED);
         }
         let Some(id) = pending.ids.pop_front() else {
@@ -563,7 +605,8 @@ impl Authenticator {
         id: &[u8],
         include_user: bool,
     ) -> CtapResult<Vec<(Value, Value)>> {
-        let mut keystore = self.open_keystore()?;
+        let dir = self.user_dir(pending.uid);
+        let mut keystore = Keystore::open(&dir, &mut self.tpm).map_err(internal)?;
         let index = keystore.find(id).ok_or(CTAP2_ERR_NO_CREDENTIALS)?;
         let credential = &mut keystore.credentials[index];
         if credential.rp_id != pending.rp_id {
@@ -572,7 +615,6 @@ impl Authenticator {
         credential.sign_count = credential.sign_count.wrapping_add(1);
         let credential = credential.clone();
         keystore.save(&mut self.tpm).map_err(internal)?;
-        drop(keystore);
 
         let mut auth_data = Vec::with_capacity(37);
         auth_data.extend_from_slice(&Sha256::digest(pending.rp_id.as_bytes()));
@@ -582,10 +624,10 @@ impl Authenticator {
         hash.update(&auth_data);
         hash.update(pending.client_data_hash);
         let digest: [u8; 32] = hash.finalize().into();
-        let signature = self
-            .tpm
-            .sign(&credential.tpm_public, &credential.tpm_private, &digest)
+        let signature = keystore
+            .sign(&mut self.tpm, &credential, &digest)
             .map_err(internal)?;
+        drop(keystore);
         log::info!(
             "signed assertion for {} with credential {}",
             pending.rp_id,
@@ -647,28 +689,193 @@ impl Authenticator {
     }
 
     fn reset(&mut self, ctx: &RequestContext) -> CtapResult<Option<Value>> {
+        let user = self.user()?;
         self.consent(
             Kind::Verification,
-            "Delete ALL passkeys stored in gkey?\n\nThis cannot be undone.",
+            "Delete ALL your passkeys stored in gkey?\n\nThis cannot be undone.",
+            &user,
             ctx,
         )?;
-        let mut keystore = self.open_keystore()?;
+        let mut keystore = self.open_keystore(&user)?;
         keystore.credentials.clear();
         keystore.save(&mut self.tpm).map_err(internal)?;
-        log::info!("all credentials deleted by authenticatorReset");
+        log::info!(
+            "all credentials of user {} deleted by authenticatorReset",
+            user.uid
+        );
         Ok(None)
+    }
+}
+
+/// Summary of a credential, as reported to management clients.
+#[derive(Clone, Debug)]
+pub struct CredentialSummary {
+    pub id: String,
+    pub rp_id: String,
+    pub user_name: String,
+    pub user_display_name: String,
+    pub discoverable: bool,
+    pub created: u64,
+    pub sign_count: u32,
+}
+
+impl From<&Credential> for CredentialSummary {
+    fn from(c: &Credential) -> Self {
+        CredentialSummary {
+            id: c.id_hex(),
+            rp_id: c.rp_id.clone(),
+            user_name: c.user_name.clone().unwrap_or_default(),
+            user_display_name: c.user_display_name.clone().unwrap_or_default(),
+            discoverable: c.discoverable,
+            created: c.created,
+            sign_count: c.sign_count,
+        }
+    }
+}
+
+/// Description of the authenticator, as reported to management
+/// clients.
+#[derive(Clone, Debug)]
+pub struct Info {
+    pub vendor: String,
+    pub fingerprint: String,
+    pub keystore: PathBuf,
+    pub credentials: usize,
+    pub discoverable: usize,
+}
+
+type Reply<T> = oneshot::Sender<std::result::Result<T, String>>;
+
+/// A request from a management client, made on behalf of the user
+/// `uid`.  The caller has already established who the client is and
+/// what it may do.
+pub enum Manage {
+    List {
+        uid: u32,
+        reply: Reply<Vec<CredentialSummary>>,
+    },
+    /// Delete the credentials whose IDs start with each of `ids`.
+    Delete {
+        uid: u32,
+        ids: Vec<String>,
+        reply: Reply<Vec<CredentialSummary>>,
+    },
+    Info {
+        uid: u32,
+        reply: Reply<Info>,
+    },
+}
+
+/// Work for the authenticator thread.
+pub enum Job {
+    Ctap(Request),
+    Manage(Manage),
+}
+
+/// A queue to the authenticator thread.
+#[derive(Clone)]
+pub struct Jobs(mpsc::Sender<Job>);
+
+impl Submit for Jobs {
+    fn submit(&self, request: Request) -> bool {
+        self.0.send(Job::Ctap(request)).is_ok()
+    }
+}
+
+impl Jobs {
+    /// Queue a management request; false if the authenticator is gone.
+    pub fn manage(&self, request: Manage) -> bool {
+        self.0.send(Job::Manage(request)).is_ok()
+    }
+}
+
+fn list(keystore: Option<&Keystore>) -> Vec<CredentialSummary> {
+    keystore
+        .map(|k| k.credentials.iter().map(CredentialSummary::from).collect())
+        .unwrap_or_default()
+}
+
+impl Authenticator {
+    /// Open the keystore of `uid` if it exists, without creating it.
+    fn existing_keystore(&mut self, uid: u32) -> Result<Option<Keystore>> {
+        let dir = self.user_dir(uid);
+        if !Keystore::exists(&dir) {
+            return Ok(None);
+        }
+        Keystore::open(&dir, &mut self.tpm).map(Some)
+    }
+
+    /// Process a management request.
+    pub fn manage(&mut self, request: Manage) {
+        match request {
+            Manage::List { uid, reply } => {
+                let result = self
+                    .existing_keystore(uid)
+                    .map(|k| list(k.as_ref()))
+                    .map_err(|e| e.to_string());
+                let _ = reply.send(result);
+            }
+            Manage::Delete { uid, ids, reply } => {
+                let _ = reply.send(self.delete(uid, &ids));
+            }
+            Manage::Info { uid, reply } => {
+                let result = self.info(uid).map_err(|e| e.to_string());
+                let _ = reply.send(result);
+            }
+        }
+    }
+
+    fn delete(
+        &mut self,
+        uid: u32,
+        prefixes: &[String],
+    ) -> std::result::Result<Vec<CredentialSummary>, String> {
+        let Some(mut keystore) = self.existing_keystore(uid).map_err(|e| e.to_string())? else {
+            return Err("no credentials".into());
+        };
+        let mut doomed = Vec::new();
+        for prefix in prefixes {
+            match keystore.find_prefix(prefix).as_slice() {
+                [] => return Err(format!("no credential matches '{prefix}'")),
+                [index] => doomed.push(*index),
+                _ => return Err(format!("'{prefix}' matches several credentials")),
+            }
+        }
+        doomed.sort_unstable();
+        doomed.dedup();
+        let mut deleted = Vec::new();
+        for index in doomed.into_iter().rev() {
+            deleted.push(CredentialSummary::from(&keystore.credentials.remove(index)));
+        }
+        keystore.save(&mut self.tpm).map_err(|e| e.to_string())?;
+        for credential in &deleted {
+            log::info!("user {uid} deleted credential {}", credential.id);
+        }
+        Ok(deleted)
+    }
+
+    fn info(&mut self, uid: u32) -> Result<Info> {
+        let keystore = self.existing_keystore(uid)?;
+        let credentials = list(keystore.as_ref());
+        Ok(Info {
+            vendor: self.tpm.vendor(),
+            fingerprint: keystore::hex(&self.tpm.fingerprint()),
+            keystore: self.user_dir(uid),
+            discoverable: credentials.iter().filter(|c| c.discoverable).count(),
+            credentials: credentials.len(),
+        })
     }
 }
 
 /// A running authenticator thread.
 pub struct Handle {
-    sender: Option<mpsc::Sender<Request>>,
+    sender: Option<Jobs>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Handle {
-    /// A channel on which to submit requests.
-    pub fn sender(&self) -> mpsc::Sender<Request> {
+    /// A queue on which to submit requests.
+    pub fn sender(&self) -> Jobs {
         self.sender.clone().expect("authenticator is running")
     }
 
@@ -682,19 +889,27 @@ impl Handle {
     }
 }
 
-/// Start the authenticator on its own thread.  The TPM connection is
-/// opened, and the keystore created if needed, before this returns.
-pub fn spawn(tcti: String, keystore: PathBuf, verifier: Verifier) -> Result<Handle> {
-    let (sender, receiver) = mpsc::channel::<Request>();
+/// Start the authenticator on its own thread, keeping the keystores
+/// of the users in `state_dir`.  The TPM connection is opened before
+/// this returns.
+pub fn spawn(
+    tcti: String,
+    state_dir: &Path,
+    users: UserSource,
+    verifier: Verifier,
+) -> Result<Handle> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(state_dir)
+        .map_err(|e| Error::Generic(format!("{}: {e}", state_dir.display())))?;
+    let state_dir = state_dir.to_path_buf();
+    let (sender, receiver) = mpsc::channel::<Job>();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
     let thread = std::thread::Builder::new()
         .name("authenticator".into())
         .spawn(move || {
-            let setup = Tpm::open(&tcti).and_then(|mut tpm| {
-                Keystore::open_or_create(&keystore, &mut tpm)?;
-                Ok(tpm)
-            });
-            let tpm = match setup {
+            let tpm = match Tpm::open(&tcti) {
                 Ok(tpm) => {
                     let _ = ready_tx.send(Ok(()));
                     tpm
@@ -704,21 +919,26 @@ pub fn spawn(tcti: String, keystore: PathBuf, verifier: Verifier) -> Result<Hand
                     return;
                 }
             };
-            let mut authenticator = Authenticator::new(tpm, keystore, verifier);
-            while let Ok(request) = receiver.recv() {
-                let ctx = RequestContext {
-                    cancel: &request.cancel,
-                    status: &request.status,
-                };
-                let response = authenticator.handle(&request.payload, &ctx);
-                let _ = request.reply.send(response);
+            let mut authenticator = Authenticator::new(tpm, state_dir, users, verifier);
+            while let Ok(job) = receiver.recv() {
+                match job {
+                    Job::Ctap(request) => {
+                        let ctx = RequestContext {
+                            cancel: &request.cancel,
+                            status: &request.status,
+                        };
+                        let response = authenticator.handle(&request.payload, &ctx);
+                        let _ = request.reply.send(response);
+                    }
+                    Job::Manage(request) => authenticator.manage(request),
+                }
             }
         })?;
     ready_rx
         .recv()
         .map_err(|_| Error::Generic("authenticator thread failed to start".into()))??;
     Ok(Handle {
-        sender: Some(sender),
+        sender: Some(Jobs(sender)),
         thread: Some(thread),
     })
 }

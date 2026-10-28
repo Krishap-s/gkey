@@ -32,7 +32,8 @@ use p256::ecdsa::{Signature, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 use gkey::ctap2::{self, Authenticator, RequestContext};
-use gkey::keystore::Keystore;
+use gkey::keystore::{self, Keystore};
+use gkey::system::UserSource;
 use gkey::tpm::Tpm;
 use gkey::verify::{Method, Verifier};
 
@@ -90,6 +91,19 @@ fn bytes(value: &Value) -> &[u8] {
 
 struct Harness {
     authenticator: Authenticator,
+}
+
+fn harness(tpm: Tpm, state: &std::path::Path, uid: u32, command: &str) -> Harness {
+    Harness {
+        authenticator: Authenticator::new(
+            tpm,
+            state.to_path_buf(),
+            UserSource::Fixed(uid),
+            Verifier {
+                method: Method::Command(command.into()),
+            },
+        ),
+    }
 }
 
 impl Harness {
@@ -235,15 +249,7 @@ fn register_and_authenticate() {
     let _guard = TPM_LOCK.lock().unwrap();
     let dir = scratch_dir("flow");
     let tpm = Tpm::open(&tcti).unwrap();
-    let mut h = Harness {
-        authenticator: Authenticator::new(
-            tpm,
-            dir.clone(),
-            Verifier {
-                method: Method::Command("true".into()),
-            },
-        ),
-    };
+    let mut h = harness(tpm, &dir, 1000, "true");
 
     let info = h.call(ctap2::CMD_GET_INFO, None).unwrap();
     assert_eq!(bytes(get(&info, 3)), &ctap2::AAGUID);
@@ -306,20 +312,12 @@ fn register_and_authenticate() {
     // Everything survives reopening the keystore.
     drop(h);
     let mut tpm = Tpm::open(&tcti).unwrap();
-    let store = Keystore::open(&dir, &mut tpm).unwrap();
+    let store = Keystore::open(&keystore::user_dir(&dir, 1000), &mut tpm).unwrap();
     assert_eq!(store.credentials.len(), 3);
     drop(store);
 
     // A user who refuses consent gets nothing.
-    let mut h = Harness {
-        authenticator: Authenticator::new(
-            tpm,
-            dir.clone(),
-            Verifier {
-                method: Method::Command("false".into()),
-            },
-        ),
-    };
+    let mut h = harness(tpm, &dir, 1000, "false");
     assert_eq!(
         h.get_assertion("example.org", &[], true).err(),
         Some(ctap2::CTAP2_ERR_OPERATION_DENIED)
@@ -337,6 +335,7 @@ fn tampered_keystore_is_rejected() {
     let Some(tcti) = tcti() else { return };
     let _guard = TPM_LOCK.lock().unwrap();
     let dir = scratch_dir("tamper");
+    std::fs::create_dir_all(&dir).unwrap();
     let mut tpm = Tpm::open(&tcti).unwrap();
     drop(Keystore::create(&dir, &mut tpm).unwrap());
     let path = dir.join("keystore");
@@ -349,4 +348,72 @@ fn tampered_keystore_is_rejected() {
         .expect("tampering detected");
     assert!(err.to_string().contains("integrity"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn users_are_isolated() {
+    let Some(tcti) = tcti() else { return };
+    let _guard = TPM_LOCK.lock().unwrap();
+    let dir = scratch_dir("isolation");
+
+    // Alice registers a passkey.
+    let mut alice = harness(Tpm::open(&tcti).unwrap(), &dir, 1000, "true");
+    let (id, key) = alice
+        .make_credential("example.org", b"alice", true, &[])
+        .unwrap();
+    let assertion = alice.get_assertion("example.org", &[], true).unwrap();
+    check_assertion(&assertion, &key, 1);
+    drop(alice);
+
+    // Bob, at the same seat later, can neither discover it nor use it
+    // by its ID.
+    let mut bob = harness(Tpm::open(&tcti).unwrap(), &dir, 1001, "true");
+    assert_eq!(
+        bob.get_assertion("example.org", &[], true).err(),
+        Some(ctap2::CTAP2_ERR_NO_CREDENTIALS)
+    );
+    assert_eq!(
+        bob.get_assertion("example.org", std::slice::from_ref(&id), true)
+            .err(),
+        Some(ctap2::CTAP2_ERR_NO_CREDENTIALS)
+    );
+    drop(bob);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn user_key_password_is_enforced_by_tpm() {
+    let Some(tcti) = tcti() else { return };
+    let _guard = TPM_LOCK.lock().unwrap();
+    let mut tpm = Tpm::open(&tcti).unwrap();
+    let auth = [7u8; 32];
+    let user_key = tpm.create_user_key(&auth).unwrap();
+    let key = tpm
+        .with_user_key(&user_key, &auth, |tpm, parent| {
+            tpm.create_signing_key(parent)
+        })
+        .unwrap();
+    let blob = gkey::tpm::Blob {
+        public: key.public,
+        private: key.private,
+    };
+    let digest = [1u8; 32];
+    tpm.with_user_key(&user_key, &auth, |tpm, parent| {
+        tpm.sign(parent, &blob, &digest)
+    })
+    .expect("the right password works");
+
+    // Programs that can talk to the TPM but lack the password cannot
+    // load the credential keys under the user key.
+    let wrong = [8u8; 32];
+    let err = tpm
+        .with_user_key(&user_key, &wrong, |tpm, parent| {
+            tpm.sign(parent, &blob, &digest)
+        })
+        .expect_err("a wrong password is refused");
+    assert!(err.to_string().contains("auth"), "{err}");
+    tpm.with_user_key(&user_key, &[], |tpm, parent| {
+        tpm.sign(parent, &blob, &digest)
+    })
+    .expect_err("an empty password is refused");
 }

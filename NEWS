@@ -14,10 +14,17 @@ Credential private keys are ECC P-256 keys generated inside the TPM
 and bound to it.  The credential list is encrypted with a key sealed
 to the TPM.  TPM commands use a salted, encrypted session.
 
-The user is asked for consent with pinentry and verified with PAM, or
-with an external command given with --verify-command.
+gkey-service runs as a system service under a dedicated account, the
+only one allowed to use the TPM, and serves the user of the active
+session.  Each user's credentials and keystore key live under a TPM
+user key protected by a random password that only the service can
+read, in /var/lib/gkey/UID.
 
-New program gkey lists, inspects and deletes credentials.
+Users authenticate through the desktop's polkit agent for every
+operation; an external command can decide instead (--verify-command).
+
+New program gkey lists, inspects and deletes the caller's credentials
+through the service's D-Bus interface.
 
 Both programs follow the GNU conventions for options, --help and
 --version.  The build system provides the standard GNU targets and a

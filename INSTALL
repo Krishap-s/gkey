@@ -5,16 +5,16 @@ Requirements
 ============
 
   * Rust 1.80 or later, with cargo
-  * a C compiler and pkg-config
+  * pkg-config
   * the TPM2 Software Stack, tpm2-tss 2.4 or later, with development
     files (tss2-esys, tss2-tctildr, tss2-mu)
-  * Linux-PAM development files
   * GNU Autoconf, when building from the version control repository
   * Texinfo, to build the manual
 
 At run time gkey needs a TPM 2.0 reachable through /dev/tpmrm0, the
-uhid kernel module, and a pinentry program such as the ones
-distributed with GnuPG.
+uhid kernel module, systemd (for the unit, systemd-logind and
+systemd-sysusers), the D-Bus system bus, polkit, and a polkit
+authentication agent in each user's session.
 
 For 'make check', swtpm is needed to run the tests that use a TPM, and
 python-fido2 1.x to run the interoperability test.
@@ -23,16 +23,21 @@ Basic Installation
 ==================
 
      autoconf             # only when building from the repository
-     ./configure
+     ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var
      make
      make check
      make install
 
 'configure' accepts the usual options, such as '--prefix=DIR' (default
-'/usr/local'), and in addition:
+'/usr/local').  gkey-service is installed in SBINDIR and keeps its data
+in LOCALSTATEDIR/lib/gkey unless systemd gives it a state directory.
+In addition:
 
-'--with-systemduserunitdir=DIR'
-     Where to install the systemd user unit (PREFIX/lib/systemd/user).
+'--with-systemdsystemunitdir=DIR'
+     Where to install the systemd unit (PREFIX/lib/systemd/system).
+
+'--with-sysusersdir=DIR'
+     Where to install the account definition (PREFIX/lib/sysusers.d).
 
 '--with-udevrulesdir=DIR'
      Where to install the udev rule (PREFIX/lib/udev/rules.d).
@@ -40,12 +45,15 @@ Basic Installation
 '--with-modulesloaddir=DIR'
      Where to install the kernel module list (PREFIX/lib/modules-load.d).
 
-'--with-pamdir=DIR'
-     Where to install the PAM configuration (SYSCONFDIR/pam.d).
+'--with-polkitactiondir=DIR'
+     Where to install the polkit actions (DATADIR/polkit-1/actions).
 
-When installing under /usr/local, udev, systemd and PAM may not look
-in the default directories; pass for instance
-'--with-udevrulesdir=/etc/udev/rules.d --with-pamdir=/etc/pam.d'.
+'--with-dbussystemdir=DIR'
+     Where to install the D-Bus policy (DATADIR/dbus-1/system.d).
+
+When installing under /usr/local, udev, systemd, polkit and D-Bus may
+not look in the default directories; installing with '--prefix=/usr'
+as shown above avoids the problem.
 
 The Makefile honours DESTDIR, and provides the standard targets
 'install-strip', 'uninstall', 'installcheck', 'info', 'html', 'pdf',

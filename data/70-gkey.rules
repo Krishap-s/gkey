@@ -1,11 +1,10 @@
 # udev rules for gkey.
 #
-# Let members of the 'gkey' group create virtual HID devices, so that
-# gkey-service can run as an ordinary user.  Note that any program run
-# by such a user can then create arbitrary HID devices (keyboards
-# included), so only add users who should be trusted with that.
+# Let the 'gkey' account, which gkey-service runs as, create virtual
+# HID devices.  Do not add people to the 'gkey' group: it would let
+# their programs create arbitrary HID devices, keyboards included.
 #
 # The FIDO device that gkey-service creates is made accessible to the
-# logged in user by systemd's 60-fido-id.rules.
+# user of the active session by systemd's 60-fido-id.rules.
 
 KERNEL=="uhid", SUBSYSTEM=="misc", GROUP="gkey", MODE="0660"

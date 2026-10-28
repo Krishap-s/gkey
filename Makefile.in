@@ -25,6 +25,8 @@ abs_srcdir = @abs_srcdir@
 prefix = @prefix@
 exec_prefix = @exec_prefix@
 bindir = @bindir@
+sbindir = @sbindir@
+localstatedir = @localstatedir@
 datarootdir = @datarootdir@
 datadir = @datadir@
 sysconfdir = @sysconfdir@
@@ -34,10 +36,13 @@ htmldir = @htmldir@
 dvidir = @dvidir@
 pdfdir = @pdfdir@
 psdir = @psdir@
-systemduserunitdir = @systemduserunitdir@
+systemdsystemunitdir = @systemdsystemunitdir@
+sysusersdir = @sysusersdir@
 udevrulesdir = @udevrulesdir@
 modulesloaddir = @modulesloaddir@
-pamdir = @pamdir@
+polkitactiondir = @polkitactiondir@
+dbussystemdir = @dbussystemdir@
+statedir = $(localstatedir)/lib/gkey
 
 CARGO = @CARGO@
 CARGOFLAGS =
@@ -52,15 +57,16 @@ INSTALL_PROGRAM = $(INSTALL)
 INSTALL_DATA = $(INSTALL) -m 644
 PYTHON3 = python3
 
-PROGRAMS = gkey gkey-service
 RELEASE = $(CARGO_TARGET_DIR)/release
-CARGO_BUILD = $(CARGO) build --release --manifest-path $(srcdir)/Cargo.toml \
+CARGO_BUILD = GKEY_STATE_DIR='$(statedir)' $(CARGO) build --release --manifest-path $(srcdir)/Cargo.toml \
 	--target-dir $(CARGO_TARGET_DIR) $(CARGOFLAGS)
 
 DISTFILES = AUTHORS COPYING ChangeLog DESIGN.md INSTALL NEWS README.md \
 	Cargo.toml Cargo.lock Makefile.in configure configure.ac \
 	default.nix flake.nix flake.lock \
-	data/70-gkey.rules data/gkey.pam data/gkey-modules.conf data/gkey.service.in \
+	data/70-gkey.rules data/gkey-modules.conf data/gkey.service.in \
+	data/gkey.sysusers data/io.github.krishap_s.gkey.policy \
+	data/io.github.krishap_s.Gkey1.conf \
 	doc/gkey.texi doc/gkey.info doc/version.texi
 
 .PHONY: all build install install-strip installdirs uninstall clean mostlyclean \
@@ -73,21 +79,26 @@ build:
 	$(CARGO_BUILD) --bins
 
 gkey.service: $(srcdir)/data/gkey.service.in Makefile
-	sed -e 's|@bindir[@]|$(bindir)|g' $(srcdir)/data/gkey.service.in > $@.tmp
+	sed -e 's|@sbindir[@]|$(sbindir)|g' $(srcdir)/data/gkey.service.in > $@.tmp
 	mv $@.tmp $@
 
 installdirs:
-	mkdir -p $(DESTDIR)$(bindir) $(DESTDIR)$(systemduserunitdir) \
-	  $(DESTDIR)$(udevrulesdir) $(DESTDIR)$(modulesloaddir) $(DESTDIR)$(pamdir)
+	mkdir -p $(DESTDIR)$(bindir) $(DESTDIR)$(sbindir) \
+	  $(DESTDIR)$(systemdsystemunitdir) $(DESTDIR)$(sysusersdir) \
+	  $(DESTDIR)$(udevrulesdir) $(DESTDIR)$(modulesloaddir) \
+	  $(DESTDIR)$(polkitactiondir) $(DESTDIR)$(dbussystemdir)
 
 install: all installdirs
-	for p in $(PROGRAMS); do \
-	  $(INSTALL_PROGRAM) $(RELEASE)/$$p $(DESTDIR)$(bindir)/$$p || exit 1; \
-	done
-	$(INSTALL_DATA) gkey.service $(DESTDIR)$(systemduserunitdir)/gkey.service
+	$(INSTALL_PROGRAM) $(RELEASE)/gkey $(DESTDIR)$(bindir)/gkey
+	$(INSTALL_PROGRAM) $(RELEASE)/gkey-service $(DESTDIR)$(sbindir)/gkey-service
+	$(INSTALL_DATA) gkey.service $(DESTDIR)$(systemdsystemunitdir)/gkey.service
+	$(INSTALL_DATA) $(srcdir)/data/gkey.sysusers $(DESTDIR)$(sysusersdir)/gkey.conf
 	$(INSTALL_DATA) $(srcdir)/data/70-gkey.rules $(DESTDIR)$(udevrulesdir)/70-gkey.rules
 	$(INSTALL_DATA) $(srcdir)/data/gkey-modules.conf $(DESTDIR)$(modulesloaddir)/gkey.conf
-	$(INSTALL_DATA) $(srcdir)/data/gkey.pam $(DESTDIR)$(pamdir)/gkey
+	$(INSTALL_DATA) $(srcdir)/data/io.github.krishap_s.gkey.policy \
+	  $(DESTDIR)$(polkitactiondir)/io.github.krishap_s.gkey.policy
+	$(INSTALL_DATA) $(srcdir)/data/io.github.krishap_s.Gkey1.conf \
+	  $(DESTDIR)$(dbussystemdir)/io.github.krishap_s.Gkey1.conf
 	@if test -f doc/gkey.info || test -f $(srcdir)/doc/gkey.info; then \
 	  $(MAKE) install-info; \
 	fi
@@ -96,11 +107,13 @@ install-strip:
 	$(MAKE) INSTALL_PROGRAM='$(INSTALL_PROGRAM) -s' install
 
 uninstall:
-	for p in $(PROGRAMS); do rm -f $(DESTDIR)$(bindir)/$$p; done
-	rm -f $(DESTDIR)$(systemduserunitdir)/gkey.service
+	rm -f $(DESTDIR)$(bindir)/gkey $(DESTDIR)$(sbindir)/gkey-service
+	rm -f $(DESTDIR)$(systemdsystemunitdir)/gkey.service
+	rm -f $(DESTDIR)$(sysusersdir)/gkey.conf
 	rm -f $(DESTDIR)$(udevrulesdir)/70-gkey.rules
 	rm -f $(DESTDIR)$(modulesloaddir)/gkey.conf
-	rm -f $(DESTDIR)$(pamdir)/gkey
+	rm -f $(DESTDIR)$(polkitactiondir)/io.github.krishap_s.gkey.policy
+	rm -f $(DESTDIR)$(dbussystemdir)/io.github.krishap_s.Gkey1.conf
 	-$(INSTALL_INFO) --delete --info-dir=$(DESTDIR)$(infodir) \
 	  $(DESTDIR)$(infodir)/gkey.info 2>/dev/null
 	rm -f $(DESTDIR)$(infodir)/gkey.info
@@ -166,9 +179,9 @@ check:
 	  srcdir='$(srcdir)' $(SHELL) $(srcdir)/tests/run-tests.sh
 
 installcheck:
-	for p in $(PROGRAMS); do \
-	  $(DESTDIR)$(bindir)/$$p --version > /dev/null || exit 1; \
-	  $(DESTDIR)$(bindir)/$$p --help > /dev/null || exit 1; \
+	for p in $(DESTDIR)$(bindir)/gkey $(DESTDIR)$(sbindir)/gkey-service; do \
+	  $$p --version > /dev/null || exit 1; \
+	  $$p --help > /dev/null || exit 1; \
 	done
 
 # Distribution.

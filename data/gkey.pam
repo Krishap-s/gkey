@@ -1,6 +1,0 @@
-#%PAM-1.0
-# PAM configuration used by gkey-service to verify the user before a
-# passkey is created or used.  Adjust to taste, for instance to use a
-# fingerprint reader.
-auth     include  login
-account  include  login

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- polkit actions of gkey.  gkey-service, running as the 'gkey'
+     account, asks polkit on behalf of the user at the seat; the
+     owner annotation lets it do so for subjects of other users. -->
+<policyconfig>
+  <vendor>gkey</vendor>
+  <vendor_url>https://github.com/Krishap-s/gkey</vendor_url>
+
+  <action id="io.github.krishap_s.gkey.use-passkey">
+    <description>Use a passkey</description>
+    <message>Authentication is required to create or use a passkey.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.owner">unix-user:gkey</annotate>
+  </action>
+
+  <action id="io.github.krishap_s.gkey.manage">
+    <description>Manage your passkeys</description>
+    <message>Authentication is required to delete passkeys.</message>
+    <defaults>
+      <allow_any>auth_self</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.owner">unix-user:gkey</annotate>
+  </action>
+</policyconfig>

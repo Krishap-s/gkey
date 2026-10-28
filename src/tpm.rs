@@ -24,9 +24,22 @@
 //! connection is opened, and the objects created under it are stored
 //! on disk as blobs that only this particular TPM can load.
 //!
+//! The hierarchy is:
+//!
+//! ```text
+//! storage primary key (owner hierarchy, empty password)
+//! └── user key, one per user (storage key, random password)
+//!     ├── credential signing keys
+//!     └── sealed keystore encryption key
+//! ```
+//!
+//! Loading any object below a user key requires that key's password,
+//! so programs that may talk to the TPM, but do not know the password,
+//! cannot use the credentials of any user.
+//!
 //! Commands are sent inside an HMAC session salted with the primary
 //! key, so that secrets crossing the bus between the CPU and the TPM
-//! (the sealed keystore key in particular) are encrypted.
+//! (passwords, the sealed keystore key) are encrypted.
 
 use std::str::FromStr;
 
@@ -39,9 +52,9 @@ use tss_esapi::interface_types::algorithm::{HashingAlgorithm, PublicAlgorithm};
 use tss_esapi::interface_types::ecc::EccCurve;
 use tss_esapi::interface_types::resource_handles::Hierarchy;
 use tss_esapi::structures::{
-    Digest, EccPoint, EccScheme, HashScheme, HashcheckTicket, KeyedHashScheme, Private, Public,
-    PublicBuilder, PublicEccParametersBuilder, PublicKeyedHashParameters, SensitiveData, Signature,
-    SignatureScheme, SymmetricDefinition, SymmetricDefinitionObject,
+    Auth, Digest, EccPoint, EccScheme, HashScheme, HashcheckTicket, KeyedHashScheme, Private,
+    Public, PublicBuilder, PublicEccParametersBuilder, PublicKeyedHashParameters, SensitiveData,
+    Signature, SignatureScheme, SymmetricDefinition, SymmetricDefinitionObject,
 };
 use tss_esapi::traits::{Marshall, UnMarshall};
 use tss_esapi::tss2_esys::TPMT_TK_HASHCHECK;
@@ -74,11 +87,21 @@ pub struct SigningKey {
     pub y: [u8; 32],
 }
 
-/// A TPM sealed data object.
-pub struct SealedBlob {
+/// An object created by the TPM and stored outside of it: its
+/// marshalled public area and its private area, encrypted by the TPM
+/// with the parent key.
+#[derive(Clone)]
+pub struct Blob {
     pub public: Vec<u8>,
     pub private: Vec<u8>,
 }
+
+/// Size of the random password of a user key.
+pub const USER_AUTH_SIZE: usize = 32;
+
+/// A user key loaded in the TPM, see [`Tpm::with_user_key`].
+#[derive(Clone, Copy)]
+pub struct UserKey(KeyHandle);
 
 /// A connection to the TPM with the gkey primary key loaded.
 pub struct Tpm {
@@ -104,7 +127,9 @@ pub fn tcti_from_environment(explicit: Option<&str>) -> String {
     DEFAULT_TCTI.to_string()
 }
 
-fn primary_template() -> Result<Public> {
+/// Template of a storage key: a restricted ECC decryption key that
+/// can be the parent of other objects.
+fn storage_key_template(unique: EccPoint) -> Result<Public> {
     let attributes = ObjectAttributesBuilder::new()
         .with_fixed_tpm(true)
         .with_fixed_parent(true)
@@ -119,9 +144,6 @@ fn primary_template() -> Result<Public> {
         EccCurve::NistP256,
     )
     .build()?;
-    let mut unique = [0u8; 32];
-    unique.copy_from_slice(&Sha256::digest(PRIMARY_UNIQUE));
-    let unique = EccPoint::new(unique.to_vec().try_into()?, Default::default());
     Ok(PublicBuilder::new()
         .with_public_algorithm(PublicAlgorithm::Ecc)
         .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
@@ -129,6 +151,11 @@ fn primary_template() -> Result<Public> {
         .with_ecc_parameters(parameters)
         .with_ecc_unique_identifier(unique)
         .build()?)
+}
+
+fn primary_template() -> Result<Public> {
+    let unique = Sha256::digest(PRIMARY_UNIQUE).to_vec();
+    storage_key_template(EccPoint::new(unique.try_into()?, Default::default()))
 }
 
 fn signing_key_template() -> Result<Public> {
@@ -300,16 +327,58 @@ impl Tpm {
         Ok(out)
     }
 
-    /// Generate a new P-256 signing key inside the TPM.
-    pub fn create_signing_key(&mut self) -> Result<SigningKey> {
+    fn load(&mut self, parent: KeyHandle, blob: &Blob) -> Result<KeyHandle> {
+        let public = Public::unmarshall(&blob.public)?;
+        let private = Private::try_from(blob.private.clone())?;
+        Ok(self.ctx.load(parent, private, public)?)
+    }
+
+    fn flush(&mut self, handle: KeyHandle) {
+        if let Err(err) = self.ctx.flush_context(ObjectHandle::from(handle)) {
+            log::warn!("cannot flush TPM object: {err}");
+        }
+    }
+
+    /// Create a user key protected by the password `auth`.
+    pub fn create_user_key(&mut self, auth: &[u8]) -> Result<Blob> {
         let created = self.ctx.create(
             self.primary,
-            signing_key_template()?,
-            None,
+            storage_key_template(EccPoint::default())?,
+            Some(Auth::try_from(auth.to_vec())?),
             None,
             None,
             None,
         )?;
+        Ok(Blob {
+            public: created.out_public.marshall()?,
+            private: created.out_private.value().to_vec(),
+        })
+    }
+
+    /// Load the user key `key` with its password `auth`, call `f` with
+    /// it, and unload it.  The objects that `f` creates and uses must
+    /// have the user key as their parent.
+    pub fn with_user_key<T>(
+        &mut self,
+        key: &Blob,
+        auth: &[u8],
+        f: impl FnOnce(&mut Tpm, UserKey) -> Result<T>,
+    ) -> Result<T> {
+        let primary = self.primary;
+        let handle = self.load(primary, key)?;
+        let result = Auth::try_from(auth.to_vec())
+            .map_err(Error::from)
+            .and_then(|auth| Ok(self.ctx.tr_set_auth(handle.into(), auth)?))
+            .and_then(|_| f(self, UserKey(handle)));
+        self.flush(handle);
+        result
+    }
+
+    /// Generate a new P-256 signing key inside the TPM.
+    pub fn create_signing_key(&mut self, parent: UserKey) -> Result<SigningKey> {
+        let created = self
+            .ctx
+            .create(parent.0, signing_key_template()?, None, None, None, None)?;
         let public = created.out_public.marshall()?;
         let private = created.out_private.value().to_vec();
         let (x, y) = public_point(created.out_public)?;
@@ -321,23 +390,11 @@ impl Tpm {
         })
     }
 
-    fn load(&mut self, public: &[u8], private: &[u8]) -> Result<KeyHandle> {
-        let public = Public::unmarshall(public)?;
-        let private = Private::try_from(private.to_vec())?;
-        Ok(self.ctx.load(self.primary, private, public)?)
-    }
-
-    fn flush(&mut self, handle: KeyHandle) {
-        if let Err(err) = self.ctx.flush_context(ObjectHandle::from(handle)) {
-            log::warn!("cannot flush TPM object: {err}");
-        }
-    }
-
     /// Sign the SHA-256 `digest` with a key previously created by
     /// [`Tpm::create_signing_key`].  Returns a DER encoded ECDSA
     /// signature.
-    pub fn sign(&mut self, public: &[u8], private: &[u8], digest: &[u8; 32]) -> Result<Vec<u8>> {
-        let handle = self.load(public, private)?;
+    pub fn sign(&mut self, parent: UserKey, key: &Blob, digest: &[u8; 32]) -> Result<Vec<u8>> {
+        let handle = self.load(parent.0, key)?;
         let validation = HashcheckTicket::try_from(TPMT_TK_HASHCHECK {
             tag: TPM2_ST_HASHCHECK,
             hierarchy: TPM2_RH_NULL,
@@ -361,25 +418,25 @@ impl Tpm {
         }
     }
 
-    /// Seal `data` (at most 128 bytes) to this TPM.
-    pub fn seal(&mut self, data: &[u8]) -> Result<SealedBlob> {
+    /// Seal `data` (at most 128 bytes) under a user key.
+    pub fn seal(&mut self, parent: UserKey, data: &[u8]) -> Result<Blob> {
         let created = self.ctx.create(
-            self.primary,
+            parent.0,
             sealed_data_template()?,
             None,
             Some(SensitiveData::try_from(data.to_vec())?),
             None,
             None,
         )?;
-        Ok(SealedBlob {
+        Ok(Blob {
             public: created.out_public.marshall()?,
             private: created.out_private.value().to_vec(),
         })
     }
 
     /// Recover data sealed with [`Tpm::seal`].
-    pub fn unseal(&mut self, blob: &SealedBlob) -> Result<Zeroizing<Vec<u8>>> {
-        let handle = self.load(&blob.public, &blob.private)?;
+    pub fn unseal(&mut self, parent: UserKey, blob: &Blob) -> Result<Zeroizing<Vec<u8>>> {
+        let handle = self.load(parent.0, blob)?;
         let result = self.ctx.unseal(ObjectHandle::from(handle));
         self.flush(handle);
         Ok(Zeroizing::new(result?.value().to_vec()))

@@ -110,6 +110,18 @@ pub struct Request {
     pub reply: oneshot::Sender<Vec<u8>>,
 }
 
+/// Where the transport sends CBOR requests.
+pub trait Submit {
+    /// Queue `request`; false if the authenticator is gone.
+    fn submit(&self, request: Request) -> bool;
+}
+
+impl Submit for mpsc::Sender<Request> {
+    fn submit(&self, request: Request) -> bool {
+        self.send(request).is_ok()
+    }
+}
+
 /// Split a message into packets.
 pub fn fragment(cid: u32, cmd: u8, data: &[u8]) -> Vec<[u8; PACKET_SIZE]> {
     let mut packets = Vec::new();
@@ -149,9 +161,9 @@ struct Busy {
 }
 
 /// The CTAPHID protocol engine.
-pub struct Server<T: Transport> {
+pub struct Server<T: Transport, S: Submit> {
     transport: T,
-    authenticator: mpsc::Sender<Request>,
+    authenticator: S,
     next_cid: u32,
     channels: VecDeque<u32>,
     assembly: Option<Assembly>,
@@ -167,9 +179,9 @@ async fn wait_reply(busy: &mut Option<Busy>) -> Vec<u8> {
     }
 }
 
-impl<T: Transport> Server<T> {
+impl<T: Transport, S: Submit> Server<T, S> {
     /// Create a server that forwards CBOR requests to `authenticator`.
-    pub fn new(transport: T, authenticator: mpsc::Sender<Request>) -> Self {
+    pub fn new(transport: T, authenticator: S) -> Self {
         Server {
             transport,
             authenticator,
@@ -356,7 +368,7 @@ impl<T: Transport> Server<T> {
                     status: busy.status.clone(),
                     reply,
                 };
-                if self.authenticator.send(request).is_err() {
+                if !self.authenticator.submit(request) {
                     return self.send_error(cid, ERR_OTHER).await;
                 }
                 self.busy = Some(busy);
@@ -400,7 +412,7 @@ impl<T: Transport> Server<T> {
     }
 }
 
-impl<T: Transport> Drop for Server<T> {
+impl<T: Transport, S: Submit> Drop for Server<T, S> {
     fn drop(&mut self) {
         // Do not leave the authenticator waiting for the user.
         if let Some(busy) = &self.busy {

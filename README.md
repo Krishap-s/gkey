@@ -6,23 +6,27 @@ USB security key, so it works wherever security keys do, while the
 private keys of your passkeys are generated and used inside the TPM
 and never leave it.
 
-- `gkey-service` creates a virtual FIDO2 security key through the
-  kernel's UHID driver and implements CTAP 2.0 over CTAPHID.
-- `gkey` lists, inspects and deletes the stored passkeys.
+- `gkey-service` is a system service that creates a virtual FIDO2
+  security key through the kernel's UHID driver, implements CTAP 2.0
+  over CTAPHID, and serves the user of the active session.
+- `gkey` lets each user list, inspect and delete their own passkeys,
+  through the service's D-Bus interface.
 
-Each credential is an ECC P-256 key created by the TPM under a storage
-primary key derived from the TPM's owner seed.  The credential list is
-encrypted with AES-256-GCM under a key sealed to the TPM.  The user is
-asked for consent with GnuPG's pinentry and verified through PAM.
+Only the service's own account may use the TPM.  Each user has a TPM
+storage key protected by a random password that only the service can
+read; their credential keys, ECC P-256 keys created by the TPM, and the
+key encrypting their credential list are created under it, so no other
+user or program can use them.  Every operation is confirmed through the
+desktop's polkit authentication dialog.
 
 ## Building
 
-You need Rust (cargo and rustc), a C compiler, pkg-config, the TPM2
-Software Stack (`tpm2-tss`) and Linux-PAM development files.  Then:
+You need Rust 1.80 or later (cargo and rustc), pkg-config and the TPM2
+Software Stack (`tpm2-tss`) development files.  Then:
 
 ```sh
 autoconf
-./configure
+./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var
 make
 make check
 sudo make install
@@ -35,10 +39,16 @@ relying party.  See the file `INSTALL` for details.
 ## Setting up
 
 ```sh
-sudo groupadd --system gkey
-sudo usermod -a -G gkey,tss "$USER"   # then log in again
-systemctl --user enable --now gkey.service
+sudo systemd-sysusers                 # creates the 'gkey' account
+sudo modprobe uhid
+sudo udevadm control --reload && sudo udevadm trigger /dev/uhid
+sudo systemctl daemon-reload
+sudo systemctl enable --now gkey.service
+gkey list
 ```
+
+Users need a polkit authentication agent in their desktop session, as
+most desktops provide.  Do not add users to the `gkey` or `tss` groups.
 
 The manual (`info gkey`, or `doc/gkey.texi`) explains the setup, the
 security model and the options of both programs.

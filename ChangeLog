@@ -1,5 +1,36 @@
 2026-10-28  Krishap  <krishapbusiness@gmail.com>
 
+	Run gkey-service as a system service with per-user TPM keys.
+
+	* src/tpm.rs (Blob, UserKey, USER_AUTH_SIZE): New.
+	(Tpm::create_user_key, Tpm::with_user_key): New.
+	(Tpm::create_signing_key, Tpm::sign, Tpm::seal, Tpm::unseal):
+	Create and use objects under a user key.
+	* src/keystore.rs: Format version 2, storing the user key and its
+	password.  Keystores live in STATE/UID.
+	(state_dir, user_dir, DEFAULT_STATE_DIR): New.
+	(Keystore::create_credential_key, Keystore::sign): New.
+	* src/system.rs: New file.  logind and polkit clients.
+	* src/manager.rs: New file.  D-Bus management interface.
+	* src/verify.rs: Replace PAM and pinentry with polkit.
+	* src/ctap2.rs (Authenticator): Serve the user at the seat.
+	(Manage, Job, Jobs, CredentialSummary, Info): New.
+	* src/ctaphid.rs (Submit): New trait.
+	* src/bin/gkey-service/main.rs: New options --state-dir, --seat
+	and --user; remove --keystore, --pam-service and --pinentry.
+	* src/bin/gkey/main.rs: Talk to the service over D-Bus; remove
+	the init command and the --keystore and --tcti options.
+	* data/gkey.service.in: Make it a hardened system unit.
+	* data/gkey.sysusers, data/io.github.krishap_s.gkey.policy:
+	* data/io.github.krishap_s.Gkey1.conf: New files.
+	* data/gkey.pam: Remove.
+	* configure.ac, Makefile.in: Install the new files; drop PAM.
+	* tests/authenticator.rs: Test isolation between users and the
+	user key password.
+	* doc/gkey.texi, README.md, INSTALL, DESIGN.md, NEWS: Update.
+
+2026-10-28  Krishap  <krishapbusiness@gmail.com>
+
 	Support Rust 1.80, so that Cargo versions without edition 2024
 	support can build gkey.
 
