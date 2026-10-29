@@ -58,7 +58,9 @@ not, is kept in the keystore, so credentials can be listed and deleted.
 ## User consent
 
 The service asks polkit to authorize the action
-`io.github.krishap_s.gkey.use-passkey` for the user's logind session.
+`io.github.krishap_s.gkey.use-passkey` for the oldest process of the user
+in their logind session (polkit's rules engine aborts on session
+subjects, so the session cannot be the subject itself).
 The desktop's authentication agent shows the request and checks the
 user's password through PAM, so fingerprint readers and other PAM
 modules work, and the service never sees the password.  polkit has no

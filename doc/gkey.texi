@@ -310,8 +310,9 @@ the user is.  Relying parties ask for one or the other.
 
 With the default @samp{polkit} method, both are obtained by asking
 polkit to authorize the action
-@samp{io.github.krishap_s.gkey.use-passkey} for the session of the
-user.  The authentication agent of the session shows a dialog naming
+@samp{io.github.krishap_s.gkey.use-passkey} for a process of the user
+in their session, found in @file{/proc}; @file{/proc} must therefore
+not be mounted with @samp{hidepid}.  The authentication agent of the session shows a dialog naming
 the web site and asks for the user's password; polkit checks it
 through PAM, so any PAM module configured for polkit, such as a
 fingerprint reader, can be used.  polkit offers no confirmation that

@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::prelude::*;
-use crate::system::{Subject, SystemBus, User, ACTION_USE};
+use crate::system::{SystemBus, User, ACTION_USE};
 
 /// Kind of consent requested from the user.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,12 +95,8 @@ impl Verifier {
                 };
                 // Presence and verification are both a password
                 // prompt: polkit cannot merely ask for confirmation.
-                bus.check_authorization(
-                    &Subject::Session(session.clone()),
-                    ACTION_USE,
-                    description,
-                    cancel,
-                )?
+                let subject = bus.session_process(user.uid, session)?;
+                bus.check_authorization(&subject, ACTION_USE, description, cancel)?
             }
         };
         if cancel.load(Ordering::Relaxed) {

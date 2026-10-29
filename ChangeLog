@@ -1,3 +1,16 @@
+2026-10-29  Krishap  <krishapbusiness@gmail.com>
+
+	Do not crash polkitd with session subjects.
+
+	polkit's rules engine aborts on unix-session subjects
+	(g_assert_not_reached in push_subject), so ask on behalf of a
+	process of the user in their session instead.
+	* src/system.rs (Subject::Process, SystemBus::session_process):
+	New.  Find the process through its cgroup, or ask logind.
+	(Subject::Session): Remove.
+	* src/verify.rs (Verifier::ask): Use them.
+	* DESIGN.md, doc/gkey.texi: Update.
+
 2026-10-28  Krishap  <krishapbusiness@gmail.com>
 
 	Run gkey-service as a system service with per-user TPM keys.

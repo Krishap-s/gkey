@@ -23,6 +23,10 @@
 //! * polkit, to obtain the consent of that user.  The desktop's
 //!   polkit authentication agent asks for the user's password, through
 //!   PAM, and gkey never sees it.
+//!
+//! polkit is asked on behalf of a process of the user in their session
+//! rather than on behalf of the session itself: polkit's rules engine
+//! aborts on session subjects.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -67,11 +71,64 @@ pub struct User {
 
 /// Who asks for consent in a polkit check.
 pub enum Subject {
-    /// A logind session.
-    Session(String),
+    /// A process, identified by its ID and start time.
+    Process { pid: u32, start_time: u64 },
     /// A client of the system bus, identified by its unique name.
     BusName(String),
 }
+
+/// A process found in `/proc`.
+#[derive(Debug, PartialEq, Eq)]
+struct ProcessInfo {
+    pid: u32,
+    /// Start time, in clock ticks since boot, as polkit expects it.
+    start_time: u64,
+    cgroup: String,
+}
+
+/// Parse the start time out of the contents of `/proc/PID/stat`.
+fn parse_start_time(stat: &str) -> Option<u64> {
+    // The command name, in parentheses, may contain spaces; the
+    // start time is the 20th field after it.
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Parse the real user ID out of the contents of `/proc/PID/status`.
+fn parse_real_uid(status: &str) -> Option<u32> {
+    let line = status.lines().find(|l| l.starts_with("Uid:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Return the processes whose real user is `uid`, oldest first.
+fn user_processes(uid: u32) -> Vec<ProcessInfo> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut processes: Vec<ProcessInfo> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
+            let dir = entry.path();
+            let status = std::fs::read_to_string(dir.join("status")).ok()?;
+            if parse_real_uid(&status)? != uid {
+                return None;
+            }
+            let stat = std::fs::read_to_string(dir.join("stat")).ok()?;
+            Some(ProcessInfo {
+                pid,
+                start_time: parse_start_time(&stat)?,
+                cgroup: std::fs::read_to_string(dir.join("cgroup")).unwrap_or_default(),
+            })
+        })
+        .collect();
+    processes.sort_by_key(|p| (p.start_time, p.pid));
+    processes
+}
+
+/// Most processes to ask logind about when looking for a process of
+/// a session whose cgroup does not tell.
+const MAX_SESSION_LOOKUPS: usize = 64;
 
 /// A connection to the system bus, usable from threads outside of the
 /// event loop.
@@ -140,6 +197,58 @@ impl SystemBus {
         }))
     }
 
+    /// Find a process of the user `uid` in the logind session
+    /// `session`, to stand for the user in polkit checks.
+    pub fn session_process(&self, uid: u32, session: &str) -> Result<Subject> {
+        self.runtime
+            .block_on(self.session_process_async(uid, session))
+    }
+
+    async fn session_process_async(&self, uid: u32, session: &str) -> Result<Subject> {
+        let processes = user_processes(uid);
+        // systemd-logind puts the processes of session N in the
+        // session-N.scope cgroup.
+        let scope = format!("/session-{session}.scope");
+        let by_cgroup = processes.iter().find(|p| {
+            p.cgroup
+                .lines()
+                .any(|l| l.ends_with(&scope) || l.contains(&format!("{scope}/")))
+        });
+        if let Some(p) = by_cgroup {
+            return Ok(Subject::Process {
+                pid: p.pid,
+                start_time: p.start_time,
+            });
+        }
+        // Otherwise, as with elogind, ask the session manager.
+        let manager = Proxy::new(
+            &self.connection,
+            LOGIND,
+            "/org/freedesktop/login1",
+            "org.freedesktop.login1.Manager",
+        )
+        .await
+        .map_err(bus_error)?;
+        let wanted: OwnedObjectPath = manager
+            .call("GetSession", &(session,))
+            .await
+            .map_err(bus_error)?;
+        for p in processes.iter().take(MAX_SESSION_LOOKUPS) {
+            let found: zbus::Result<OwnedObjectPath> =
+                manager.call("GetSessionByPID", &(p.pid,)).await;
+            if found.is_ok_and(|path| path == wanted) {
+                return Ok(Subject::Process {
+                    pid: p.pid,
+                    start_time: p.start_time,
+                });
+            }
+        }
+        Err(Error::Generic(format!(
+            "cannot find a process of user {uid} in session {session} \
+             (is /proc mounted with hidepid?)"
+        )))
+    }
+
     /// Ask polkit whether `subject` may perform `action`, letting the
     /// authentication agent of the user show `message`.
     pub async fn check_authorization_async(
@@ -154,9 +263,10 @@ impl SystemBus {
             .map_err(bus_error)?;
         let mut subject_details: HashMap<&str, Value> = HashMap::new();
         let kind = match subject {
-            Subject::Session(id) => {
-                subject_details.insert("session-id", Value::from(id.as_str()));
-                "unix-session"
+            Subject::Process { pid, start_time } => {
+                subject_details.insert("pid", Value::from(*pid));
+                subject_details.insert("start-time", Value::from(*start_time));
+                "unix-process"
             }
             Subject::BusName(name) => {
                 subject_details.insert("name", Value::from(name.as_str()));
@@ -273,5 +383,32 @@ impl UserSource {
                 session: None,
             })),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_proc_files() {
+        let stat = "1234 (a (weird) name) S 1 1234 1234 0 -1 4194560 100 0 0 0 \
+                    1 2 0 0 20 0 1 0 987654 12345678 300 18446744073709551615";
+        assert_eq!(parse_start_time(stat), Some(987654));
+        assert_eq!(parse_start_time("garbage"), None);
+        let status = "Name:\tbash\nUid:\t1000\t1001\t1000\t1000\nGid:\t100\n";
+        assert_eq!(parse_real_uid(status), Some(1000));
+    }
+
+    #[test]
+    fn finds_own_processes() {
+        // SAFETY: getuid cannot fail.
+        let uid = unsafe { libc::getuid() };
+        let me = std::process::id();
+        let processes = user_processes(uid);
+        assert!(processes.iter().any(|p| p.pid == me));
+        assert!(processes
+            .windows(2)
+            .all(|w| w[0].start_time <= w[1].start_time));
     }
 }
