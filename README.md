@@ -46,11 +46,8 @@ set-group-ID.  Then:
 sudo modprobe uhid
 sudo udevadm control --reload
 sudo udevadm trigger --subsystem-match=tpmrm --subsystem-match=misc
-sudo gpasswd -d "$USER" gkey; sudo gpasswd -d "$USER" tss  # then log in again
 systemctl --user enable --now gkey.service
 ```
-
-Nobody should be in the `gkey` or `tss` groups.
 
 The manual (`info gkey`, or `doc/gkey.texi`) explains the setup, the
 security model and the options of both programs.
