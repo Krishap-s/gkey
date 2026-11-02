@@ -63,6 +63,10 @@ GKEY_USER = @GKEY_USER@
 PROGRAMS = gkey gkey-service
 RELEASE = $(CARGO_TARGET_DIR)/release
 BINARIES = $(RELEASE)/gkey $(RELEASE)/gkey-service
+# Stop early when configure predates this Makefile: it then leaves
+# placeholders unsubstituted, and make would build with them.
+$(if $(findstring @,$(GKEY_USER)),$(error configure is out of date; run "autoconf && ./configure" again, with the same options))
+
 # Every cargo invocation must see the same environment, or cargo
 # rebuilds the crate each time it changes.
 CARGO_ENV = GKEY_USER='$(GKEY_USER)'
