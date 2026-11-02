@@ -61,7 +61,11 @@ GKEY_GROUP = @GKEY_GROUP@
 
 PROGRAMS = gkey gkey-service
 RELEASE = $(CARGO_TARGET_DIR)/release
-CARGO_BUILD = GKEY_GROUP='$(GKEY_GROUP)' $(CARGO) build --release --manifest-path $(srcdir)/Cargo.toml \
+BINARIES = $(RELEASE)/gkey $(RELEASE)/gkey-service
+# Every cargo invocation must see the same environment, or cargo
+# rebuilds the crate each time it changes.
+CARGO_ENV = GKEY_GROUP='$(GKEY_GROUP)'
+CARGO_BUILD = $(CARGO_ENV) $(CARGO) build --release --manifest-path $(srcdir)/Cargo.toml \
 	--target-dir $(CARGO_TARGET_DIR) $(CARGOFLAGS)
 
 DISTFILES = AUTHORS COPYING ChangeLog DESIGN.md INSTALL NEWS README.md \
@@ -78,8 +82,20 @@ DISTFILES = AUTHORS COPYING ChangeLog DESIGN.md INSTALL NEWS README.md \
 
 GENERATED = gkey.service 70-gkey.rules gkey.sysusers
 
-all: build $(GENERATED)
+all: $(BINARIES) $(GENERATED)
 
+# The binaries are real targets, so that 'make install' after 'make'
+# does not run cargo again: run as root, cargo would use root's home
+# directory and rebuild everything.  cargo lists the sources of each
+# binary in a dependency file next to it.
+$(BINARIES): $(srcdir)/Cargo.toml $(srcdir)/Cargo.lock Makefile
+	$(CARGO_BUILD) --bins
+	touch $@
+
+-include $(RELEASE)/gkey.d
+-include $(RELEASE)/gkey-service.d
+
+# Run cargo whatever make thinks.
 build:
 	$(CARGO_BUILD) --bins
 
@@ -206,9 +222,12 @@ install-ps: ps
 
 # Runs the unit tests and, when swtpm is installed, the tests that
 # need a TPM against a temporary software TPM.
-check:
-	CARGO='$(CARGO)' CARGO_TARGET_DIR='$(CARGO_TARGET_DIR)' PYTHON3='$(PYTHON3)' \
-	  srcdir='$(srcdir)' $(SHELL) $(srcdir)/tests/run-tests.sh
+# The tests are built in the release profile, with the same
+# environment as the programs, to reuse what 'make' built.
+check: $(BINARIES)
+	$(CARGO_ENV) CARGO='$(CARGO)' CARGO_TARGET_DIR='$(CARGO_TARGET_DIR)' \
+	  CARGOFLAGS='$(CARGOFLAGS)' PYTHON3='$(PYTHON3)' srcdir='$(srcdir)' \
+	  $(SHELL) $(srcdir)/tests/run-tests.sh
 
 installcheck:
 	for p in $(PROGRAMS); do \

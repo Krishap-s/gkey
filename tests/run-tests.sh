@@ -49,13 +49,16 @@ else
   echo "run-tests.sh: swtpm not found; skipping the tests that need a TPM" >&2
 fi
 
-"$CARGO" test --manifest-path "$manifest"
+# Build in the release profile, like the programs, to reuse their
+# dependencies.
+"$CARGO" test --release --manifest-path "$manifest" $CARGOFLAGS
 
 if test -n "$swtpm_pid" \
    && "$PYTHON3" -c 'import fido2, sys; sys.exit(fido2.__version__[0] != "1")' 2>/dev/null
 then
-  "$CARGO" build --manifest-path "$manifest" --example socket-authenticator
-  GKEY_TCTI=$GKEY_TEST_TCTI "$CARGO_TARGET_DIR/debug/examples/socket-authenticator" \
+  "$CARGO" build --release --manifest-path "$manifest" $CARGOFLAGS \
+    --example socket-authenticator
+  GKEY_TCTI=$GKEY_TEST_TCTI "$CARGO_TARGET_DIR/release/examples/socket-authenticator" \
     "$tmp/socket" "$tmp/keystore" &
   server_pid=$!
   tries=0

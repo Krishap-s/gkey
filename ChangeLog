@@ -1,5 +1,19 @@
 2026-11-02  Krishap  <krishapbusiness@gmail.com>
 
+	Do not rebuild in make check and make install.
+
+	* Makefile.in (BINARIES, CARGO_ENV): New.
+	(all): Depend on the binaries instead of the phony build target.
+	Make them real targets, using the dependency files cargo writes,
+	so that make install does not run cargo again.
+	(check): Depend on the binaries; pass the cargo environment and
+	flags to the test script.
+	* tests/run-tests.sh: Build the tests in the release profile,
+	reusing the dependencies make built.
+	* INSTALL: Advise running make before sudo make install.
+
+2026-11-02  Krishap  <krishapbusiness@gmail.com>
+
 	Install the programs set-group-ID gkey, so that programs running
 	as the user cannot use the TPM.
 

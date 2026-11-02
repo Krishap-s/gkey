@@ -62,6 +62,11 @@ prints the commands to run as root instead, which packagers should do
 in their post-installation step.  The Nix store cannot hold
 set-group-ID files; on NixOS use 'security.wrappers'.
 
+Run 'make' as yourself before 'sudo make install': 'make install' does
+not run cargo again when the programs are up to date, but if it has to,
+cargo running as root uses root's home directory and rebuilds every
+dependency.
+
 The Makefile honours DESTDIR, and provides the standard targets
 'install-strip', 'uninstall', 'installcheck', 'info', 'html', 'pdf',
 'dist', 'clean', 'distclean' and 'maintainer-clean'.
