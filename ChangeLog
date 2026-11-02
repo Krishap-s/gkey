@@ -1,13 +1,5 @@
 2026-11-02  Krishap  <krishapbusiness@gmail.com>
 
-	Stop make when configure is out of date.
-
-	* Makefile.in: Fail with a message when GKEY_USER was not
-	substituted.  An older configure does not know it, so make wrote
-	"@GKEY_USER@" into gkey.conf for systemd-sysusers.
-
-2026-11-02  Krishap  <krishapbusiness@gmail.com>
-
 	Install the programs set-user-ID gkey, the owner of the polkit
 	actions, so that the dialog can name the web site; ask polkit
 	before every command of gkey.
