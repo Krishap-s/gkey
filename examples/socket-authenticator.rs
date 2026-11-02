@@ -18,10 +18,9 @@
 //! Serve the authenticator over a Unix domain socket instead of UHID,
 //! one 64 byte HID report per read or write.  This lets FIDO client
 //! libraries exercise gkey on systems without /dev/uhid, and is used
-//! by the test suite.  Requests are served for the user running the
-//! program, and user consent is always granted.
+//! by the test suite.  User consent is always granted.
 //!
-//! Usage: socket-authenticator SOCKET STATE-DIR
+//! Usage: socket-authenticator SOCKET KEYSTORE-DIR
 
 use std::io;
 
@@ -30,7 +29,6 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
 
 use gkey::ctaphid::{Server, Transport, PACKET_SIZE};
-use gkey::system::UserSource;
 use gkey::verify::{Method, Verifier};
 
 struct Socket(UnixStream);
@@ -51,17 +49,14 @@ impl Transport for Socket {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 {
-        eprintln!("Usage: {} SOCKET STATE-DIR", args[0]);
+        eprintln!("Usage: {} SOCKET KEYSTORE-DIR", args[0]);
         std::process::exit(1);
     }
     let _ = std::fs::remove_file(&args[1]);
     let listener = UnixListener::bind(&args[1])?;
-    // SAFETY: getuid cannot fail.
-    let uid = unsafe { libc::getuid() };
     let authenticator = gkey::ctap2::spawn(
         gkey::tpm::tcti_from_environment(None),
-        std::path::Path::new(&args[2]),
-        UserSource::Fixed(uid),
+        args[2].clone().into(),
         Verifier {
             method: Method::Command("true".into()),
         },

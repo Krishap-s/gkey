@@ -1,2 +1,0 @@
-# Account gkey-service runs as, see sysusers.d(5).
-u gkey - "gkey TPM authenticator"

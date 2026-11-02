@@ -17,19 +17,28 @@
 
 //! gkey: manage the credentials of the TPM backed authenticator.
 
-use std::collections::HashMap;
 use std::ffi::CStr;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use gkey::getopt::{self, HasArg, Item, Opt};
-use gkey::manager::WireCredential;
-use gkey::system::{INTERFACE, OBJECT_PATH, SERVICE_NAME};
+use gkey::keystore::{self, hex, Keystore};
+use gkey::tpm::{self, Tpm};
 use gkey::PACKAGE_BUGREPORT;
-use zbus::{Connection, Proxy};
 
 const PROGRAM: &str = "gkey";
 
 const OPTIONS: &[Opt] = &[
+    Opt {
+        long: "keystore",
+        short: Some('k'),
+        has_arg: HasArg::Required,
+    },
+    Opt {
+        long: "tcti",
+        short: Some('t'),
+        has_arg: HasArg::Required,
+    },
     Opt {
         long: "help",
         short: None,
@@ -46,23 +55,27 @@ fn usage() {
     print!(
         "\
 Usage: {PROGRAM} [OPTION]... [COMMAND [ARGUMENT]...]
-Manage your passkeys held by the TPM backed gkey authenticator.
+Manage the passkeys held by the TPM backed gkey authenticator.
 
 Commands:
-  list               list your credentials (the default)
-  delete ID...       delete your credentials whose ID starts with ID
-  info               describe the TPM and your keystore
+  list               list the stored credentials (the default)
+  delete ID...       delete the credentials whose ID starts with ID
+  info               describe the TPM and the keystore
+  init               create an empty keystore
 
 Options:
-      --help         display this help and exit
-      --version      output version information and exit
+  -k, --keystore=DIR  use the keystore in DIR
+                        (default: $XDG_DATA_HOME/gkey)
+  -t, --tcti=CONF     reach the TPM through the TCTI CONF
+                        (default: $GKEY_TCTI or {tcti})
+      --help          display this help and exit
+      --version       output version information and exit
 
-{PROGRAM} talks to gkey-service over the system bus, which must be running.
-Deleting credentials requires authentication.  Private keys never leave the
-TPM, so credentials cannot be exported.
+Private keys never leave the TPM, so credentials cannot be exported.
 
 Report bugs to: <{PACKAGE_BUGREPORT}>
-"
+",
+        tcti = tpm::DEFAULT_TCTI
     );
 }
 
@@ -90,7 +103,11 @@ fn date(seconds: u64) -> String {
     }
 }
 
-fn print_table(credentials: &[WireCredential]) {
+fn list(store: &Keystore) {
+    if store.credentials.is_empty() {
+        println!("No credentials.");
+        return;
+    }
     let mut rows = vec![[
         "ID".to_string(),
         "RELYING PARTY".to_string(),
@@ -99,24 +116,22 @@ fn print_table(credentials: &[WireCredential]) {
         "CREATED".to_string(),
         "USES".to_string(),
     ]];
-    for (id, rp_id, name, display_name, discoverable, created, uses) in credentials {
-        let user = [name, display_name]
-            .into_iter()
-            .find(|s| !s.is_empty())
-            .cloned()
-            .unwrap_or_else(|| "-".into());
+    for c in &store.credentials {
         rows.push([
-            id.clone(),
-            rp_id.clone(),
-            user,
-            if *discoverable {
+            c.id_hex(),
+            c.rp_id.clone(),
+            c.user_name
+                .clone()
+                .or_else(|| c.user_display_name.clone())
+                .unwrap_or_else(|| "-".into()),
+            if c.discoverable {
                 "passkey"
             } else {
                 "server-side"
             }
             .into(),
-            date(*created),
-            uses.to_string(),
+            date(c.created),
+            c.sign_count.to_string(),
         ]);
     }
     let mut widths = [0usize; 6];
@@ -135,58 +150,70 @@ fn print_table(credentials: &[WireCredential]) {
     }
 }
 
-/// Turn a D-Bus error into a message for the user.
-fn describe(err: zbus::Error) -> String {
-    match err {
-        zbus::Error::MethodError(name, message, _) => match name.as_str() {
-            "org.freedesktop.DBus.Error.ServiceUnknown" => "gkey-service is not running".into(),
-            "org.freedesktop.DBus.Error.AccessDenied" => "not authorized".into(),
-            _ => message.unwrap_or_else(|| name.to_string()),
-        },
-        other => format!("D-Bus: {other}"),
+fn delete(tpm: &mut Tpm, store: &mut Keystore, prefixes: &[String]) -> Result<(), String> {
+    if prefixes.is_empty() {
+        return Err("missing credential ID".into());
     }
+    let mut doomed = Vec::new();
+    for prefix in prefixes {
+        let found = store.find_prefix(prefix);
+        match found.as_slice() {
+            [] => return Err(format!("no credential matches '{prefix}'")),
+            [index] => doomed.push(*index),
+            _ => return Err(format!("'{prefix}' matches several credentials")),
+        }
+    }
+    doomed.sort_unstable();
+    doomed.dedup();
+    for index in doomed.into_iter().rev() {
+        let credential = store.credentials.remove(index);
+        println!("deleted {} ({})", credential.id_hex(), credential.rp_id);
+    }
+    store.save(tpm).map_err(|e| e.to_string())
 }
 
-async fn run(command: &str, arguments: &[String]) -> Result<(), String> {
-    let connection = Connection::system()
-        .await
-        .map_err(|e| format!("cannot connect to the system bus: {e}"))?;
-    let proxy = Proxy::new(&connection, SERVICE_NAME, OBJECT_PATH, INTERFACE)
-        .await
-        .map_err(describe)?;
+fn info(tpm: &mut Tpm, dir: &std::path::Path) -> Result<(), String> {
+    println!("TPM manufacturer:     {}", tpm.vendor());
+    println!("Storage key digest:   {}", hex(&tpm.fingerprint()));
+    println!("Keystore:             {}", dir.display());
+    if Keystore::exists(dir) {
+        let store = Keystore::open(dir, tpm).map_err(|e| e.to_string())?;
+        let passkeys = store.credentials.iter().filter(|c| c.discoverable).count();
+        println!("Credentials:          {}", store.credentials.len());
+        println!("  discoverable:       {passkeys}");
+    } else {
+        println!("Credentials:          none (no keystore)");
+    }
+    println!("AAGUID:               {}", hex(&gkey::ctap2::AAGUID));
+    Ok(())
+}
+
+fn run(dir: PathBuf, tcti: String, command: &str, arguments: &[String]) -> Result<(), String> {
+    if !matches!(command, "list" | "delete" | "info" | "init") {
+        return Err(format!("unknown command '{command}'"));
+    }
+    if command != "delete" && !arguments.is_empty() {
+        return Err(format!("extra operand '{}'", arguments[0]));
+    }
+    let mut tpm = Tpm::open(&tcti).map_err(|e| e.to_string())?;
     match command {
+        "init" => {
+            Keystore::create(&dir, &mut tpm).map_err(|e| e.to_string())?;
+            println!("created keystore in {}", dir.display());
+            Ok(())
+        }
+        "info" => info(&mut tpm, &dir),
         "list" => {
-            let credentials: Vec<WireCredential> =
-                proxy.call("ListCredentials", &()).await.map_err(describe)?;
-            if credentials.is_empty() {
-                println!("No credentials.");
-            } else {
-                print_table(&credentials);
-            }
+            let store = Keystore::open(&dir, &mut tpm).map_err(|e| e.to_string())?;
+            list(&store);
+            Ok(())
         }
         "delete" => {
-            let deleted: Vec<WireCredential> = proxy
-                .call("DeleteCredentials", &(arguments,))
-                .await
-                .map_err(describe)?;
-            for (id, rp_id, ..) in deleted {
-                println!("deleted {id} ({rp_id})");
-            }
+            let mut store = Keystore::open(&dir, &mut tpm).map_err(|e| e.to_string())?;
+            delete(&mut tpm, &mut store, arguments)
         }
-        "info" => {
-            let info: HashMap<String, String> = proxy.call("Info", &()).await.map_err(describe)?;
-            let get = |key: &str| info.get(key).cloned().unwrap_or_else(|| "-".into());
-            println!("Service version:      {}", get("version"));
-            println!("TPM manufacturer:     {}", get("tpm-vendor"));
-            println!("Storage key digest:   {}", get("storage-key-digest"));
-            println!("Keystore:             {}", get("keystore"));
-            println!("Credentials:          {}", get("credentials"));
-            println!("  discoverable:       {}", get("discoverable"));
-            println!("AAGUID:               {}", get("aaguid"));
-        }
-        _ => unreachable!("commands are checked by the caller"),
+        _ => unreachable!(),
     }
-    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -194,9 +221,13 @@ fn main() -> ExitCode {
         Ok(items) => items,
         Err(message) => return try_help(&message),
     };
+    let mut dir: Option<PathBuf> = None;
+    let mut tcti: Option<String> = None;
     let mut operands = Vec::new();
     for item in items {
         match item {
+            Item::Opt("keystore", Some(value)) => dir = Some(value.into()),
+            Item::Opt("tcti", Some(value)) => tcti = Some(value),
             Item::Opt("help", None) => {
                 usage();
                 return ExitCode::SUCCESS;
@@ -209,30 +240,27 @@ fn main() -> ExitCode {
             Item::Opt(..) => unreachable!("option table and match disagree"),
         }
     }
+    let dir = match dir.map(Ok).unwrap_or_else(keystore::default_dir) {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("{PROGRAM}: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let tcti = tpm::tcti_from_environment(tcti.as_deref());
     let (command, arguments) = match operands.split_first() {
         Some((command, arguments)) => (command.as_str(), arguments),
         None => ("list", &[][..]),
     };
-    match command {
-        "list" | "info" if !arguments.is_empty() => {
-            return try_help(&format!("extra operand '{}'", arguments[0]))
-        }
-        "delete" if arguments.is_empty() => return try_help("missing credential ID"),
-        "list" | "info" | "delete" => {}
-        other => return try_help(&format!("unknown command '{other}'")),
-    }
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(err) => {
-            eprintln!("{PROGRAM}: cannot start the event loop: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-    match runtime.block_on(run(command, arguments)) {
+    match run(dir, tcti, command, arguments) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(message)
+            if message.starts_with("unknown command")
+                || message.starts_with("extra operand")
+                || message.starts_with("missing") =>
+        {
+            try_help(&message)
+        }
         Err(message) => {
             eprintln!("{PROGRAM}: {message}");
             ExitCode::FAILURE
