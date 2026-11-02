@@ -51,6 +51,9 @@ sudo udevadm trigger --subsystem-match=tpmrm --subsystem-match=misc
 systemctl --user enable --now gkey.service
 ```
 
+SSH keys can live in the TPM too: `ssh-keygen -t ecdsa-sk` (see the
+manual).  Ed25519 keys are not supported, since TPMs lack Ed25519.
+
 The manual (`info gkey`, or `doc/gkey.texi`) explains the setup, the
 security model and the options of both programs.
 

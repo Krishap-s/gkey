@@ -11,9 +11,10 @@
 # (at your option) any later version.
 #
 # When swtpm is installed, a temporary software TPM is started so that
-# the tests that need a TPM run as well.  When python-fido2 1.x is
-# installed too, a third party FIDO2 client and relying party exercise
-# the authenticator over CTAPHID.
+# the tests that need a TPM run as well.  When python-fido2 1.x, or
+# libfido2 (the library OpenSSH uses) and a C compiler, are installed
+# too, those third party FIDO2 clients exercise the authenticator over
+# CTAPHID.
 
 set -e
 
@@ -53,9 +54,22 @@ fi
 # dependencies.
 "$CARGO" test --release --manifest-path "$manifest" $CARGOFLAGS
 
-if test -n "$swtpm_pid" \
-   && "$PYTHON3" -c 'import fido2, sys; sys.exit(fido2.__version__[0] != "1")' 2>/dev/null
+# Independent FIDO2 clients, run against the real authenticator code
+# over a socket: python-fido2 1.x, and libfido2, the library OpenSSH
+# uses for security keys.
+python_ok=false
+if "$PYTHON3" -c 'import fido2, sys; sys.exit(fido2.__version__[0] != "1")' 2>/dev/null
 then
+  python_ok=true
+fi
+libfido2_ok=false
+if command -v "${CC:-cc}" > /dev/null 2>&1 \
+   && pkg-config --exists libfido2 > /dev/null 2>&1
+then
+  libfido2_ok=true
+fi
+
+if test -n "$swtpm_pid" && { $python_ok || $libfido2_ok; }; then
   "$CARGO" build --release --manifest-path "$manifest" $CARGOFLAGS \
     --bin socket-authenticator
   GKEY_TCTI=$GKEY_TEST_TCTI "$CARGO_TARGET_DIR/release/socket-authenticator" \
@@ -70,10 +84,22 @@ then
     fi
     sleep 0.1
   done
-  "$PYTHON3" "$srcdir/tests/fido2-client.py" "$tmp/socket"
+  if $python_ok; then
+    "$PYTHON3" "$srcdir/tests/fido2-client.py" "$tmp/socket"
+  else
+    echo "run-tests.sh: python-fido2 1.x missing; skipping that client test" >&2
+  fi
+  if $libfido2_ok; then
+    "${CC:-cc}" -Wall -Wextra -o "$tmp/libfido2-check" \
+      "$srcdir/tests/helpers/libfido2-check.c" \
+      `pkg-config --cflags --libs libfido2`
+    "$tmp/libfido2-check" "$tmp/socket"
+  else
+    echo "run-tests.sh: libfido2 or a C compiler missing; skipping the OpenSSH style test" >&2
+  fi
   kill "$server_pid"
   wait "$server_pid" || :
   server_pid=
 else
-  echo "run-tests.sh: swtpm or python-fido2 1.x missing; skipping the client test" >&2
+  echo "run-tests.sh: swtpm, or python-fido2 1.x and libfido2, missing; skipping the client tests" >&2
 fi

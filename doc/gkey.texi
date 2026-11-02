@@ -53,6 +53,7 @@ the file @file{COPYING} of the gkey distribution.
 * Invoking gkey-service::    Running the authenticator.
 * Invoking gkey::            Managing passkeys.
 * User consent::             Presence and verification of the user.
+* Using with OpenSSH::       SSH keys kept in the TPM.
 * Files::                    Where gkey keeps its data.
 * Reporting bugs::           Sending bug reports and suggestions.
 * Index::
@@ -404,6 +405,74 @@ and @env{GKEY_DESCRIPTION} set to a description of the request.  Exit
 status zero grants the request.
 
 The request is withdrawn when the browser cancels it.
+
+@node Using with OpenSSH
+@chapter Using with OpenSSH
+@cindex OpenSSH
+@cindex SSH
+@cindex ecdsa-sk
+
+OpenSSH can keep its keys on a FIDO security key, which it reaches
+through libfido2.  gkey appears as one, so SSH keys can live in the
+TPM like passkeys:
+
+@example
+ssh-keygen -t ecdsa-sk
+@end example
+
+This creates a P-256 key inside the TPM and writes the public key and
+a @dfn{key handle} (the credential ID) to @file{~/.ssh/id_ecdsa_sk}.
+Authenticate in the polkit dialog when asked; then use the key with
+@command{ssh} as any other.  Each signature asks for authentication,
+except as described below.
+
+These options of @command{ssh-keygen} work:
+
+@table @option
+@item -O verify-required
+Ask for user verification at each use.  gkey verifies the user itself
+(@pxref{User consent}), so no PIN is involved.
+
+@item -O resident
+Create a discoverable credential.
+
+@item -O application=ssh:@var{name}
+Use another application name, to keep several keys apart.
+
+@item -O no-touch-required
+See below.
+@end table
+
+@cindex silent assertion
+Before every signature, OpenSSH asks each security key, @emph{without}
+asking the user, whether it holds the key handle.  gkey answers such
+requests without a dialog, as the protocol (CTAP) allows.  The answer
+is a signature without the user-presence flag, which @command{sshd}
+refuses unless the key is authorized with @code{no-touch-required} in
+@file{authorized_keys}.  Keys made with @option{-O no-touch-required}
+and authorized that way are therefore signed with no dialog at all;
+leave that option out for keys that should always ask.
+
+Some features are not available:
+
+@itemize @bullet
+@item
+@code{ed25519-sk} keys.  gkey's keys are generated and used inside the
+TPM, which has no Ed25519; use @code{ecdsa-sk}.
+
+@item
+@code{ssh-keygen -K}, which downloads resident keys from a security
+key.  It needs the credential management of CTAP 2.1, which gkey does
+not implement, so keep the file written by @command{ssh-keygen}: it
+holds the key handle.
+
+@item
+A PIN: use @option{-O verify-required} instead.
+@end itemize
+
+The device must be usable by your user.  systemd's udev rules grant
+the user of the active session access to FIDO devices; libfido2 1.5 or
+later is needed for @option{-O resident} and @option{-O verify-required}.
 
 @node Files
 @chapter Files

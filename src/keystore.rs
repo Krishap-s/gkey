@@ -71,6 +71,11 @@ pub struct Credential {
     pub sign_count: u32,
     /// Creation time, in seconds since the epoch.
     pub created: u64,
+    /// The credProtect level requested when creating the credential:
+    /// 0 for none, otherwise 1 to 3.  Keystores written before the
+    /// extension existed lack it.
+    #[serde(default)]
+    pub cred_protect: u8,
 }
 
 impl Credential {

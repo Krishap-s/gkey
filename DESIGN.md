@@ -91,6 +91,27 @@ in the dialog.  The `gkey` program asks for the `manage` action before
 every command, and starts `pkttyagent` on a terminal.  Alternatively
 an external command decides.
 
+## OpenSSH
+
+`ssh-keygen -t ecdsa-sk` works with the P-256 credentials gkey already
+creates.  OpenSSH, through libfido2, needs three things beyond plain
+WebAuthn:
+
+- the attestation statement: with no certificate, libfido2 requires a
+  self attestation signature (`fido_cred_verify_self`), so
+  `makeCredential` returns the `packed` format signed by the new
+  credential key (a second TPM signature per registration);
+- the `credProtect` extension for resident and verify-required keys:
+  it is advertised in `getInfo`, stored per credential, echoed in the
+  authenticator data, and enforced (level 3 credentials do not exist
+  without user verification, level 2 ones are hidden from discovery);
+- silent assertions (`up=false`) to find the device holding a key
+  handle before every signature, which therefore get no dialog.
+
+`tests/helpers/libfido2-check.c` runs the calls of OpenSSH's `sk_enroll`
+and `sk_sign` through libfido2 against the real authenticator.  Ed25519
+is impossible without leaving the TPM: no TPM curve supports it.
+
 ## Future work
 
 - PCR policies binding keys to the boot state

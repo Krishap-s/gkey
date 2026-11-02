@@ -24,6 +24,11 @@ and connecting to polkit, so programs running as the user cannot use
 the TPM or create HID devices, while the authentication dialog names
 the web site.  Users no longer join the tss group.
 
+SSH keys can be kept in the TPM: "ssh-keygen -t ecdsa-sk" works.  To
+make it so, registrations carry a "packed" self attestation signed by
+the new credential, and the credProtect extension is supported.  Ed25519
+keys (ed25519-sk) are not, since TPMs do not offer Ed25519.
+
 The authentication dialogs have a consistent plain-text layout, a
 headline then labelled lines such as "Website" and "Account", that
 reads the same in every agent.  Long host names keep their end.

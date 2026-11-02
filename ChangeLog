@@ -1,5 +1,25 @@
 2026-11-02  Krishap  <krishapbusiness@gmail.com>
 
+	Support OpenSSH's ecdsa-sk keys.
+
+	* src/ctap2.rs (make_credential): Return a packed self
+	attestation signed by the new credential, which libfido2 requires
+	when there is no certificate.  Accept the credProtect extension
+	and echo it in the authenticator data.
+	(cred_protect, visible): New.  Enforce credProtect levels in
+	getAssertion and for the exclude list.
+	(get_info): Advertise credProtect.
+	* src/keystore.rs (Credential): New field cred_protect.
+	* tests/helpers/libfido2-check.c: New file.  Runs OpenSSH's calls
+	through libfido2 against the authenticator.
+	* tests/run-tests.sh: Run it when libfido2 is installed.
+	* tests/authenticator.rs: Verify the attestation signature; test
+	credProtect.
+	* Makefile.in (dist): Ship tests/helpers/*.c.
+	* doc/gkey.texi, README.md, DESIGN.md, NEWS: Document.
+
+2026-11-02  Krishap  <krishapbusiness@gmail.com>
+
 	Give the authentication dialogs a consistent plain-text layout.
 
 	* src/prompt.rs: New file.  The wording of every dialog, and the

@@ -120,6 +120,21 @@ impl Harness {
         rk: bool,
         exclude: &[Vec<u8>],
     ) -> Result<(Vec<u8>, VerifyingKey), u8> {
+        self.make_credential_with(rp, user, rk, exclude, true, None)
+    }
+
+    /// Like `make_credential`, choosing whether user verification is
+    /// requested and the credProtect level (an arbitrary CBOR value, to
+    /// test invalid ones).
+    fn make_credential_with(
+        &mut self,
+        rp: &str,
+        user: &[u8],
+        rk: bool,
+        exclude: &[Vec<u8>],
+        uv: bool,
+        cred_protect: Option<Value>,
+    ) -> Result<(Vec<u8>, VerifyingKey), u8> {
         let mut parameters = vec![
             (int(1), Value::Bytes(vec![7; 32])),
             (
@@ -171,24 +186,58 @@ impl Harness {
             int(7),
             Value::Map(vec![
                 (text("rk"), Value::Bool(rk)),
-                (text("uv"), Value::Bool(true)),
+                (text("uv"), Value::Bool(uv)),
             ]),
         ));
+        if let Some(level) = &cred_protect {
+            parameters.push((
+                int(6),
+                Value::Map(vec![(text("credProtect"), level.clone())]),
+            ));
+        }
         let response = self.call(ctap2::CMD_MAKE_CREDENTIAL, Some(Value::Map(parameters)))?;
-        assert_eq!(*get(&response, 1), text("none"));
+        // Self attestation: the credential key signs the authenticator
+        // data and the client data hash.
+        assert_eq!(*get(&response, 1), text("packed"));
         let auth_data = bytes(get(&response, 2));
         assert_eq!(auth_data[..32], Sha256::digest(rp.as_bytes())[..]);
-        assert_eq!(auth_data[32], 0x45, "flags UP | UV | AT");
+        let mut expected = 0x01 | 0x40; // UP | AT
+        if uv {
+            expected |= 0x04; // UV
+        }
+        if cred_protect.is_some() {
+            expected |= 0x80; // ED
+        }
+        assert_eq!(auth_data[32], expected, "authenticator data flags");
         assert_eq!(&auth_data[37..53], &ctap2::AAGUID);
         let id_len = u16::from_be_bytes([auth_data[53], auth_data[54]]) as usize;
         let id = auth_data[55..55 + id_len].to_vec();
-        let cose: Value = ciborium::from_reader(&auth_data[55 + id_len..]).unwrap();
+        let mut rest = &auth_data[55 + id_len..];
+        let cose: Value = ciborium::from_reader(&mut rest).unwrap();
         assert_eq!(*get(&cose, 1), int(2));
         assert_eq!(*get(&cose, 3), int(-7));
         let mut point = vec![4u8];
         point.extend_from_slice(bytes(get(&cose, -2)));
         point.extend_from_slice(bytes(get(&cose, -3)));
         let key = VerifyingKey::from_sec1_bytes(&point).expect("valid P-256 point");
+        match &cred_protect {
+            Some(level) => {
+                // The extension output echoes the level that was applied.
+                let output: Value = ciborium::from_reader(&mut rest).unwrap();
+                assert_eq!(get_text(&output, "credProtect"), Some(level));
+            }
+            None => assert!(rest.is_empty(), "no extension output"),
+        }
+        assert!(rest.is_empty());
+        let statement = get(&response, 3);
+        assert_eq!(get_text(statement, "alg"), Some(&int(-7)));
+        assert!(get_text(statement, "x5c").is_none(), "self attestation");
+        let signature =
+            Signature::from_der(bytes(get_text(statement, "sig").unwrap())).expect("DER signature");
+        let mut signed = auth_data.to_vec();
+        signed.extend_from_slice(&[7; 32]);
+        key.verify(&signed, &signature)
+            .expect("the attestation signature verifies with the credential key");
         Ok((id, key))
     }
 
@@ -348,5 +397,127 @@ fn tampered_keystore_is_rejected() {
         .err()
         .expect("tampering detected");
     assert!(err.to_string().contains("integrity"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cred_protect_levels() {
+    let Some(tcti) = tcti() else { return };
+    let _guard = TPM_LOCK.lock().unwrap();
+    let dir = scratch_dir("credprotect");
+    let tpm = Tpm::open(&tcti).unwrap();
+    let mut h = Harness {
+        authenticator: Authenticator::new(
+            tpm,
+            dir.clone(),
+            Verifier {
+                method: Method::Command("true".into()),
+            },
+        ),
+    };
+
+    // getInfo advertises the extension.
+    let info = h.call(ctap2::CMD_GET_INFO, None).unwrap();
+    assert_eq!(*get(&info, 2), Value::Array(vec![text("credProtect")]));
+
+    // Level 3 (verification required), not discoverable.
+    let (required, required_key) = h
+        .make_credential_with("ssh:", b"u3", false, &[], true, Some(int(3)))
+        .unwrap();
+    // Level 2 (verification, or the ID), discoverable.
+    let (listed, listed_key) = h
+        .make_credential_with("ssh:", b"u2", true, &[], true, Some(int(2)))
+        .unwrap();
+    // Level 1 and no protection need nothing.
+    let (open, open_key) = h
+        .make_credential_with("ssh:", b"u1", false, &[], false, Some(int(1)))
+        .unwrap();
+    let (plain, _) = h
+        .make_credential_with("ssh:", b"u0", false, &[], false, None)
+        .unwrap();
+
+    // Invalid levels are refused.
+    for level in [int(0), int(4), int(-1), text("2")] {
+        assert!(h
+            .make_credential_with("ssh:", b"x", false, &[], true, Some(level))
+            .is_err());
+    }
+
+    // Without user verification: a level 3 credential does not exist,
+    // even when its ID is given; the others can be used by ID.
+    assert_eq!(
+        h.get_assertion("ssh:", std::slice::from_ref(&required), false)
+            .err(),
+        Some(ctap2::CTAP2_ERR_NO_CREDENTIALS)
+    );
+    let assertion = h
+        .get_assertion("ssh:", std::slice::from_ref(&listed), false)
+        .unwrap();
+    check_assertion(&assertion, &listed_key, 1);
+    let assertion = h
+        .get_assertion("ssh:", std::slice::from_ref(&open), false)
+        .unwrap();
+    check_assertion(&assertion, &open_key, 1);
+    h.get_assertion("ssh:", std::slice::from_ref(&plain), false)
+        .unwrap();
+
+    // Without user verification and without IDs, the discoverable
+    // level 2 credential stays hidden.
+    assert_eq!(
+        h.get_assertion("ssh:", &[], false).err(),
+        Some(ctap2::CTAP2_ERR_NO_CREDENTIALS)
+    );
+
+    // With user verification everything can be found and used.
+    let assertion = h
+        .get_assertion("ssh:", std::slice::from_ref(&required), true)
+        .unwrap();
+    check_assertion(&assertion, &required_key, 1);
+    let discovered = h.get_assertion("ssh:", &[], true).unwrap();
+    assert_eq!(
+        get_text(get(&discovered, 1), "id").map(bytes),
+        Some(&listed[..])
+    );
+
+    // A level 3 credential is not found by the exclude list without
+    // user verification, so it can be registered again.
+    assert!(h
+        .make_credential_with(
+            "ssh:",
+            b"u3",
+            false,
+            std::slice::from_ref(&required),
+            false,
+            None
+        )
+        .is_ok());
+    assert_eq!(
+        h.make_credential_with(
+            "ssh:",
+            b"u3",
+            false,
+            std::slice::from_ref(&required),
+            true,
+            None
+        )
+        .err(),
+        Some(ctap2::CTAP2_ERR_CREDENTIAL_EXCLUDED)
+    );
+
+    // The levels are kept in the keystore.
+    drop(h);
+    let mut tpm = Tpm::open(&tcti).unwrap();
+    let store = Keystore::open(&dir, &mut tpm).unwrap();
+    let level = |id: &[u8]| store.credentials[store.find(id).unwrap()].cred_protect;
+    assert_eq!(
+        [
+            level(&required),
+            level(&listed),
+            level(&open),
+            level(&plain)
+        ],
+        [3, 2, 1, 0]
+    );
+    drop(store);
     let _ = std::fs::remove_dir_all(&dir);
 }

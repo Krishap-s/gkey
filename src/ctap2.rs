@@ -76,6 +76,15 @@ const COSE_ES256: i64 = -7;
 const FLAG_UP: u8 = 0x01;
 const FLAG_UV: u8 = 0x04;
 const FLAG_AT: u8 = 0x40;
+/// The authenticator data carries extension outputs.
+const FLAG_ED: u8 = 0x80;
+
+/// credProtect levels (CTAP 2.1, section 12.1): the credential may be
+/// used without user verification (1), or found without user
+/// verification only when its ID is given (2), or never (3).
+const CRED_PROTECT_OPTIONAL: u8 = 1;
+const CRED_PROTECT_WITH_LIST: u8 = 2;
+const CRED_PROTECT_REQUIRED: u8 = 3;
 const CREDENTIAL_ID_SIZE: usize = 16;
 const MAX_MESSAGE_SIZE: i64 = crate::ctaphid::MAX_MESSAGE_SIZE as i64;
 /// How long the platform has to fetch the remaining assertions.
@@ -198,6 +207,36 @@ fn options(value: Option<&Value>) -> CtapResult<Options> {
         }
     }
     Ok(options)
+}
+
+/// Whether the credProtect level of `credential` lets a request find
+/// it: `listed` says the request names its ID, `verified` that the user
+/// was verified.  Without being found, the credential does not exist
+/// as far as the client can tell.
+fn visible(credential: &Credential, verified: bool, listed: bool) -> bool {
+    match credential.cred_protect {
+        CRED_PROTECT_REQUIRED => verified,
+        CRED_PROTECT_WITH_LIST => verified || listed,
+        _ => true,
+    }
+}
+
+/// The credProtect level asked for in the extensions map of a
+/// makeCredential request, if any.  Other extensions are ignored.
+fn cred_protect(extensions: Option<&Value>) -> CtapResult<Option<u8>> {
+    let Some(extensions) = extensions else {
+        return Ok(None);
+    };
+    match get_text(as_map(extensions)?, "credProtect") {
+        None => Ok(None),
+        Some(Value::Integer(level)) => match u8::try_from(i128::from(*level)) {
+            Ok(
+                level @ (CRED_PROTECT_OPTIONAL | CRED_PROTECT_WITH_LIST | CRED_PROTECT_REQUIRED),
+            ) => Ok(Some(level)),
+            _ => Err(CTAP2_ERR_INVALID_OPTION),
+        },
+        Some(_) => Err(CTAP2_ERR_CBOR_UNEXPECTED_TYPE),
+    }
 }
 
 fn encode(value: &Value) -> Vec<u8> {
@@ -350,13 +389,13 @@ impl Authenticator {
         parameters: &[(Value, Value)],
         ctx: &RequestContext,
     ) -> CtapResult<Option<Value>> {
-        // Only needed for attestation formats other than "none".
-        let _client_data_hash = client_data_hash(get_int(parameters, 1))?;
+        let client_data_hash = client_data_hash(get_int(parameters, 1))?;
         let rp = as_map(get_int(parameters, 2).ok_or(CTAP2_ERR_MISSING_PARAMETER)?)?;
         let user = as_map(get_int(parameters, 3).ok_or(CTAP2_ERR_MISSING_PARAMETER)?)?;
         let algorithms = as_array(get_int(parameters, 4).ok_or(CTAP2_ERR_MISSING_PARAMETER)?)?;
         let exclude = get_int(parameters, 5).map(credential_ids).transpose()?;
         let options = options(get_int(parameters, 7))?;
+        let cred_protect = cred_protect(get_int(parameters, 6))?;
         self.pin_auth(get_int(parameters, 8), ctx)?;
 
         let rp_id = as_text(get_text(rp, "id").ok_or(CTAP2_ERR_MISSING_PARAMETER)?)?.to_string();
@@ -387,9 +426,10 @@ impl Authenticator {
         if let Some(exclude) = exclude {
             let keystore = self.open_keystore()?;
             let excluded = exclude.iter().any(|id| {
-                keystore
-                    .find(id)
-                    .is_some_and(|i| keystore.credentials[i].rp_id == rp_id)
+                keystore.find(id).is_some_and(|i| {
+                    let c = &keystore.credentials[i];
+                    c.rp_id == rp_id && visible(c, options.uv, true)
+                })
             });
             drop(keystore);
             if excluded {
@@ -433,7 +473,45 @@ impl Authenticator {
             tpm_private: ByteBuf::from(key.private),
             sign_count: 0,
             created: now(),
+            cred_protect: cred_protect.unwrap_or(0),
         };
+
+        let mut flags = FLAG_UP | FLAG_AT;
+        if options.uv {
+            flags |= FLAG_UV;
+        }
+        if cred_protect.is_some() {
+            flags |= FLAG_ED;
+        }
+        let mut auth_data = Vec::with_capacity(256);
+        auth_data.extend_from_slice(&Sha256::digest(rp_id.as_bytes()));
+        auth_data.push(flags);
+        auth_data.extend_from_slice(&0u32.to_be_bytes());
+        auth_data.extend_from_slice(&AAGUID);
+        auth_data.extend_from_slice(&(id.len() as u16).to_be_bytes());
+        auth_data.extend_from_slice(&id);
+        auth_data.extend_from_slice(&cose_key(&public_key));
+        if let Some(level) = cred_protect {
+            // The extension output echoes the level that was applied.
+            auth_data.extend_from_slice(&encode(&Value::Map(vec![(
+                text("credProtect"),
+                int(level.into()),
+            )])));
+        }
+
+        // Self attestation (WebAuthn, "packed" format): the credential
+        // key signs the authenticator data and the client data hash.
+        // This proves possession of the key, and is all that clients
+        // such as OpenSSH accept from an authenticator without an
+        // attestation certificate.
+        let mut hash = Sha256::new();
+        hash.update(&auth_data);
+        hash.update(client_data_hash);
+        let digest: [u8; 32] = hash.finalize().into();
+        let signature = self
+            .tpm
+            .sign(&credential.tpm_public, &credential.tpm_private, &digest)
+            .map_err(internal)?;
 
         let mut keystore = self.open_keystore()?;
         if options.rk {
@@ -450,23 +528,16 @@ impl Authenticator {
             crate::keystore::hex(&id)
         );
 
-        let mut flags = FLAG_UP | FLAG_AT;
-        if options.uv {
-            flags |= FLAG_UV;
-        }
-        let mut auth_data = Vec::with_capacity(256);
-        auth_data.extend_from_slice(&Sha256::digest(rp_id.as_bytes()));
-        auth_data.push(flags);
-        auth_data.extend_from_slice(&0u32.to_be_bytes());
-        auth_data.extend_from_slice(&AAGUID);
-        auth_data.extend_from_slice(&(id.len() as u16).to_be_bytes());
-        auth_data.extend_from_slice(&id);
-        auth_data.extend_from_slice(&cose_key(&public_key));
-
         Ok(Some(Value::Map(vec![
-            (int(1), text("none")),
+            (int(1), text("packed")),
             (int(2), Value::Bytes(auth_data)),
-            (int(3), Value::Map(vec![])),
+            (
+                int(3),
+                Value::Map(vec![
+                    (text("alg"), int(COSE_ES256)),
+                    (text("sig"), Value::Bytes(signature)),
+                ]),
+            ),
         ])))
     }
 
@@ -492,13 +563,13 @@ impl Authenticator {
                 .iter()
                 .filter_map(|id| keystore.find(id))
                 .map(|i| &keystore.credentials[i])
-                .filter(|c| c.rp_id == rp_id)
+                .filter(|c| c.rp_id == rp_id && visible(c, options.uv, true))
                 .take(1)
                 .collect(),
             None => keystore
                 .credentials
                 .iter()
-                .filter(|c| c.discoverable && c.rp_id == rp_id)
+                .filter(|c| c.discoverable && c.rp_id == rp_id && visible(c, options.uv, false))
                 .collect(),
         };
         if matches.is_empty() {
@@ -627,8 +698,9 @@ impl Authenticator {
     fn get_info(&self) -> Value {
         Value::Map(vec![
             (int(1), Value::Array(vec![text("FIDO_2_0")])),
-            // Optional, but some clients insist on its presence.
-            (int(2), Value::Array(vec![])),
+            // credProtect lets clients such as OpenSSH create resident
+            // and verification-required keys.
+            (int(2), Value::Array(vec![text("credProtect")])),
             (int(3), bytes(&AAGUID)),
             (
                 int(4),
