@@ -131,26 +131,34 @@ user's password (@pxref{User consent}).  gkey never sees the
 password.
 @end itemize
 
-@cindex set-group-ID
-Only the @samp{gkey} group may use the TPM and @file{/dev/uhid}, and
-nobody belongs to it.  @command{gkey-service} and @command{gkey} are
-installed set-group-ID @samp{gkey}: each opens the devices it needs,
-then gives up the group for good, keeping only the open devices, and
-only then reads or writes the keystore, with the user's own
-permissions.  Programs running as the user, malware included, can
-therefore neither use the TPM to unseal the keystore or sign, nor
-create HID devices such as fake keyboards.  The kernel prevents them
-from debugging the set-group-ID processes or reading their memory.
+@cindex set-user-ID
+Only the @samp{gkey} account may use the TPM and @file{/dev/uhid}.
+@command{gkey-service} and @command{gkey} are installed set-user-ID
+@samp{gkey}: each opens the devices it needs and connects to the
+system bus, then gives up the account for good, keeping only the open
+devices and bus connection, and only then reads or writes the
+keystore, with the user's own permissions.  Programs running as the
+user, malware included, can therefore neither use the TPM to unseal
+the keystore or sign, nor create HID devices such as fake keyboards.
+The kernel prevents them from debugging the set-user-ID processes or
+reading their memory.
 
-Anyone may run the set-group-ID programs with any arguments and
+The bus remembers that the connection was made by @samp{gkey}, which
+polkit's policy names as the owner of gkey's actions.  That lets the
+programs describe each request in the authentication dialog, such as
+the web site and account, or the passkeys about to be deleted.  Text
+coming from web sites is shown with markup and control characters
+neutralized.
+
+Anyone may run the set-user-ID programs with any arguments and
 environment.  They therefore refuse the options that would choose
 another TPM connection, device or consent method
 (@option{--tcti}, @option{--uhid}, @option{--verify=command}), and
 ignore the environment variables that would (@env{GKEY_TCTI},
 @env{TPM2TOOLS_TCTI}, @env{TCTI}, @env{DBUS_SYSTEM_BUS_ADDRESS} and
 the @env{TSS2_*} variables of the TPM library).  They warn when the
-user belongs to the @samp{gkey} or @samp{tss} group, since programs
-running as such a user can use the TPM directly.
+user belongs to the @samp{tss} group, since programs running as such
+a user can use the TPM directly.
 
 Malware running as the user can still delete the keystore or put back
 an older copy, since it is the user's file, but cannot use it.  It can
@@ -174,30 +182,29 @@ gkey-service runs as an ordinary user, as a systemd user service.
 @itemize @bullet
 @item
 @command{gkey-service} and @command{gkey}, owned by the @samp{gkey}
-account and group, with mode 2755 (set-group-ID).  It creates the
+account, with mode 4755 (set-user-ID).  It creates the
 account with @command{systemd-sysusers} if needed.  When installing
 into a staging directory (@env{DESTDIR}) or as an ordinary user, it
 prints the commands to run as root instead.
 
 @item
-A udev rule granting the @samp{gkey} group @file{/dev/uhid}, and
+A udev rule granting the @samp{gkey} account @file{/dev/uhid}, and
 @file{/dev/tpmrm0} through an access control list, which leaves the
 distribution's own permissions (usually group @samp{tss}) in place.
 The rule needs @command{setfacl}, from the @samp{acl} package.
 
 @item
 A @file{modules-load.d} file loading the @samp{uhid} kernel module at
-boot, and the polkit actions.
+boot, and the polkit actions, owned by the @samp{gkey} account.
 @end itemize
 
 Then apply the udev rule to the existing devices, make sure no user is
-in the @samp{gkey} or @samp{tss} group, and enable the service:
+in the @samp{tss} group, and enable the service:
 
 @example
 sudo modprobe uhid
 sudo udevadm control --reload
 sudo udevadm trigger --subsystem-match=tpmrm --subsystem-match=misc
-sudo gpasswd -d $USER gkey      # if you were a member
 sudo gpasswd -d $USER tss       # if you were a member
 @end example
 
@@ -214,13 +221,13 @@ then offer gkey like any other security key.
 
 The service must not run with @code{NoNewPrivileges=}, or with any
 systemd option that implies it in user units, such as
-@code{SystemCallFilter=}: the kernel would ignore the set-group-ID
+@code{SystemCallFilter=}: the kernel would ignore the set-user-ID
 bit.
 
 @cindex Nix
-The Nix store cannot hold set-group-ID files.  On NixOS, install the
+The Nix store cannot hold set-user-ID files.  On NixOS, install the
 programs through @code{security.wrappers}, with
-@code{setgid = true} and @code{group = "gkey"}.
+@code{setuid = true} and @code{owner = "gkey"}.
 
 @node Invoking gkey-service
 @chapter Invoking gkey-service
@@ -247,17 +254,17 @@ default) or @samp{swtpm:host=localhost,port=2321} for a software TPM.
 Without this option the environment variables @env{GKEY_TCTI},
 @env{TPM2TOOLS_TCTI} and @env{TCTI} are consulted, in that order.
 Refused, and the variables ignored, when the program runs
-set-group-ID (@pxref{Security model}); it then always uses
+set-user-ID (@pxref{Security model}); it then always uses
 @samp{device:/dev/tpmrm0}.
 
 @item --uhid=@var{file}
 Create the device through @var{file} instead of @file{/dev/uhid}.
-Refused when the program runs set-group-ID.
+Refused when the program runs set-user-ID.
 
 @item --verify=@var{method}
 Obtain user consent with @var{method}, @samp{polkit} (the default) or
 @samp{command}.  @xref{User consent}.  The @samp{command} method is
-refused when the program runs set-group-ID, since it would let anyone
+refused when the program runs set-user-ID, since it would let anyone
 grant consent.
 
 @item --verify-command=@var{command}
@@ -320,6 +327,14 @@ when needed.
 can safely be used while the service runs.  The exit status is zero on
 success and one on failure.
 
+Every command first asks polkit to authorize the action
+@samp{io.github.krishap_s.gkey.manage}, with a dialog describing what
+it is about to do; @code{delete} names the passkeys it will delete.
+When standard input is a terminal, @command{gkey} also starts
+@command{pkttyagent}, polkit's text mode agent, which asks for the
+password in the terminal if no graphical agent serves the session,
+for instance over SSH.
+
 There is no command to export credentials: their private keys cannot
 leave the TPM.
 
@@ -349,17 +364,18 @@ Deleting all passkeys, when the browser resets the security key.
 
 polkit attributes the service, which runs outside of any login
 session, to the user's graphical session, whose authentication agent
-shows a dialog with the message of the action and asks for the user's
-password.  polkit checks it through PAM, so any PAM module configured
+shows a dialog naming the web site and the account, and asks for the
+user's password.  polkit checks it through PAM, so any PAM module configured
 for polkit, such as a fingerprint reader, can be used.  polkit offers
 no confirmation that does not authenticate, so the user authenticates
 for user presence too.  The installed policy asks every time and never
 remembers an authorization; administrators can change that with
 polkit rules files.
 
-polkit does not let an ordinary user's program pass details for the
-dialog to show, so the dialog names the operation but not the web
-site; the browser shows which site is asking.
+polkit only accepts such a description from the owner of the action,
+the @samp{gkey} account; when @command{gkey-service} does not run
+set-user-ID, as in development, the dialog shows the fixed message of
+the action instead.
 
 With the @samp{command} method, the command given with
 @option{--verify-command} is run by @file{/bin/sh}, with

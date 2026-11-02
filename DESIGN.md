@@ -35,24 +35,34 @@ each time gkey connects.  Nothing is stored in TPM non-volatile memory.
 
 ## Privileges
 
-Only the `gkey` group may use the TPM (an ACL on `/dev/tpmrm0`, set by
-udev, which keeps the distribution's `tss` permissions) and
-`/dev/uhid`, and nobody belongs to it.  `gkey-service` and `gkey` are
-installed `gkey:gkey`, mode 2755.  At startup they:
+Only the `gkey` account may use the TPM (an ACL on `/dev/tpmrm0`, set
+by udev, which keeps the distribution's `tss` permissions) and
+`/dev/uhid` (owned by it).  `gkey-service` and `gkey` are installed
+`gkey:gkey`, mode 4755.  At startup they:
 
 1. remove the environment variables that would redirect them (the
    TCTI variables, `TSS2_*`, `DBUS_SYSTEM_BUS_ADDRESS`) and refuse the
    options that would (`--tcti`, `--uhid`, `--verify=command`), since
    anyone may run them with any arguments;
-2. open the TPM, and for the service `/dev/uhid`;
-3. drop the group for good with `setresgid`, and check it is gone;
+2. open the TPM, for the service `/dev/uhid`, and connect to the
+   system bus;
+3. drop back to the user for good with `setresuid`, and check;
 4. only then open the keystore, with the user's own permissions.
+
+The bus records a client's identity when it connects, so polkit still
+sees the connection as `gkey`, which the policy names as the owner of
+gkey's actions (`org.freedesktop.policykit.owner`).  Only an owner (or
+root) may pass details to polkit, so this is what lets the dialog show
+the web site and account.  The subject of every check is the
+program's own process, running as the user.
 
 Programs running as the user, malware included, therefore cannot use
 the TPM or create HID devices, and the kernel keeps them from
-debugging the set-group-ID processes.  They can still delete or roll
+debugging the set-user-ID processes.  They can still delete or roll
 back the keystore file, and send requests that each need the user's
-password in the polkit dialog.
+password in the polkit dialog.  The code that runs as `gkey` before
+the drop is kept short: a flaw there could let an attacker act as
+`gkey`, which owns the installed programs.
 
 ## Keystore
 
@@ -73,8 +83,11 @@ session, whose authentication agent asks for the password and checks
 it through PAM, so fingerprint readers and other PAM modules work and
 the service never sees the password.  polkit has no confirmation
 without authentication, so presence and verification both require it,
-and it does not let unprivileged callers pass details, so the dialog
-cannot name the web site.  Alternatively an external command decides.
+and only the actions' owner may pass details: running set-user-ID
+`gkey`, the programs describe each request, including the web site,
+in the dialog.  The `gkey` program asks for the `manage` action before
+every command, and starts `pkttyagent` on a terminal.  Alternatively
+an external command decides.
 
 ## Future work
 

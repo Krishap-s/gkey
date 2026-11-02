@@ -15,19 +15,22 @@
 // You should have received a copy of the GNU General Public License
 // along with gkey.  If not, see <https://www.gnu.org/licenses/>.
 
-//! Running with the privileges of the `gkey` group.
+//! Running with the privileges of the `gkey` account.
 //!
-//! Only the `gkey` group may open the TPM (`/dev/tpmrm0`, through an
-//! ACL set by udev) and `/dev/uhid`.  `gkey-service` and `gkey` are
-//! installed set-group-ID `gkey`, so that they can open those devices
-//! while the user, and malware running as the user, cannot.  Each
-//! program opens its devices first and then drops the group for good,
-//! keeping only the open file descriptors; files are only ever accessed
-//! with the user's own permissions.  The kernel protects set-group-ID
-//! processes from being debugged by other processes of the user.
+//! Only the `gkey` account may open the TPM (`/dev/tpmrm0`, through an
+//! ACL set by udev) and `/dev/uhid`, and polkit trusts it, as the owner
+//! of gkey's actions, to describe each request in the authentication
+//! dialog.  `gkey-service` and `gkey` are installed set-user-ID
+//! `gkey`.  Each program opens its devices and connects to the system
+//! bus first, then drops back to the user for good, keeping only the
+//! open file descriptors.  The bus remembers the identity a client had
+//! when it connected, so polkit still sees the connection as `gkey`.
+//! Files are only ever accessed with the user's own permissions.  The
+//! kernel protects set-user-ID processes from being debugged by other
+//! processes of the user.
 //!
 //! Anyone can run these programs with any arguments and environment,
-//! so when running set-group-ID they refuse the options and ignore the
+//! so when running set-user-ID they refuse the options and ignore the
 //! environment variables that would let the caller choose a different
 //! TPM, device, consent method or system bus.
 
@@ -35,17 +38,17 @@ use std::ffi::CString;
 
 use crate::prelude::*;
 
-/// Name of the group the programs are installed set-group-ID to.
-/// `make` sets it from `configure --with-gkey-group`.
-pub const GKEY_GROUP: &str = match option_env!("GKEY_GROUP") {
-    Some(group) => group,
+/// Name of the account the programs are installed set-user-ID to.
+/// `make` sets it from `configure --with-gkey-user`.
+pub const GKEY_USER: &str = match option_env!("GKEY_USER") {
+    Some(user) => user,
     None => "gkey",
 };
 
 /// Group that distributions grant TPM access to.
 const TSS_GROUP: &str = "tss";
 
-/// Environment variables that must not influence a set-group-ID
+/// Environment variables that must not influence a set-user-ID
 /// process: TPM connection settings, TPM library settings (logging to
 /// files, configuration paths) and the address of the system bus.
 fn is_unsafe_variable(name: &str) -> bool {
@@ -56,10 +59,14 @@ fn is_unsafe_variable(name: &str) -> bool {
 }
 
 /// Whether this process runs with privileges it did not have before
-/// exec, that is set-group-ID.
+/// exec, that is set-user-ID (or set-group-ID).
 pub fn is_privileged() -> bool {
     // SAFETY: these calls only read process attributes.
-    unsafe { libc::getauxval(libc::AT_SECURE) != 0 || libc::getegid() != libc::getgid() }
+    unsafe {
+        libc::getauxval(libc::AT_SECURE) != 0
+            || libc::geteuid() != libc::getuid()
+            || libc::getegid() != libc::getgid()
+    }
 }
 
 /// Remove the environment variables that must not influence a
@@ -75,27 +82,36 @@ pub fn sanitize_environment() {
     }
 }
 
-/// Give up the privileged group for good, in every thread, and check
-/// that it is gone.
-pub fn drop_group() -> Result<()> {
-    // SAFETY: setresgid and getresgid only change or read process
-    // credentials; glibc applies setresgid to every thread.
+/// Give up the privileged account (and group, if any) for good, in
+/// every thread, and check that they are gone.
+pub fn drop_privileges() -> Result<()> {
+    let failed = |what: &str| {
+        Error::Generic(format!(
+            "cannot drop the {GKEY_USER} {what}: {}",
+            std::io::Error::last_os_error()
+        ))
+    };
+    // SAFETY: these calls only change or read process credentials;
+    // glibc applies setresgid and setresuid to every thread.  The group
+    // goes first, while the process may still change it.
     unsafe {
         let gid = libc::getgid();
         if libc::setresgid(gid, gid, gid) != 0 {
-            return Err(Error::Generic(format!(
-                "cannot drop the {GKEY_GROUP} group: {}",
-                std::io::Error::last_os_error()
-            )));
+            return Err(failed("group"));
         }
-        let (mut real, mut effective, mut saved) = (0, 0, 0);
-        if libc::getresgid(&mut real, &mut effective, &mut saved) != 0
-            || real != gid
-            || effective != gid
-            || saved != gid
+        let uid = libc::getuid();
+        if libc::setresuid(uid, uid, uid) != 0 {
+            return Err(failed("account"));
+        }
+        let (mut ru, mut eu, mut su) = (0, 0, 0);
+        let (mut rg, mut eg, mut sg) = (0, 0, 0);
+        if libc::getresuid(&mut ru, &mut eu, &mut su) != 0
+            || libc::getresgid(&mut rg, &mut eg, &mut sg) != 0
+            || [ru, eu, su] != [uid; 3]
+            || [rg, eg, sg] != [gid; 3]
         {
             return Err(Error::Generic(format!(
-                "the {GKEY_GROUP} group was not dropped"
+                "the {GKEY_USER} privileges were not dropped"
             )));
         }
     }
@@ -120,9 +136,9 @@ fn group_id(name: &str) -> Option<libc::gid_t> {
     }
 }
 
-/// The groups of the user that give direct access to the TPM or to
-/// `/dev/uhid`.  Programs running as a user who belongs to them can
-/// use the TPM without gkey, which defeats its protection.
+/// The groups of the user that give direct access to the TPM.
+/// Programs running as a user who belongs to them can use the TPM
+/// without gkey, which defeats its protection.
 pub fn privileged_memberships() -> Vec<&'static str> {
     // SAFETY: getgroups fills a buffer of the size it reports.
     let groups = unsafe {
@@ -133,7 +149,7 @@ pub fn privileged_memberships() -> Vec<&'static str> {
         groups.push(libc::getgid());
         groups
     };
-    [GKEY_GROUP, TSS_GROUP]
+    [TSS_GROUP]
         .into_iter()
         .filter(|name| group_id(name).is_some_and(|gid| groups.contains(&gid)))
         .collect()
@@ -146,8 +162,7 @@ pub fn membership_warning() -> Option<String> {
     (!groups.is_empty()).then(|| {
         format!(
             "you belong to the group(s) {}; programs running as you can use the TPM \
-             or create HID devices directly, so gkey cannot protect your passkeys \
-             from them",
+             directly, so gkey cannot protect your passkeys from them",
             groups.join(", ")
         )
     })
@@ -177,9 +192,10 @@ mod tests {
 
     #[test]
     fn unprivileged_test_run() {
-        // The test suite does not run set-group-ID.
+        // The test suite does not run set-user-ID.
         assert!(!is_privileged());
-        // Dropping to the real group is then a no-op that succeeds.
-        drop_group().unwrap();
+        // Dropping to the real user and group is then a no-op that
+        // succeeds.
+        drop_privileges().unwrap();
     }
 }

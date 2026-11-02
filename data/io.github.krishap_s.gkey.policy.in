@@ -2,10 +2,15 @@
 <!DOCTYPE policyconfig PUBLIC
  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
-<!-- polkit actions of gkey.  gkey-service, running as the user, asks
-     for these before every operation; the user authenticates in the
-     dialog of the desktop's polkit agent.  auth_self asks every time
-     and never remembers the authorization. -->
+<!-- polkit actions of gkey.  gkey-service and gkey, running as the
+     user, ask for these before every operation; the user authenticates
+     in the dialog of the desktop's polkit agent.  auth_self asks every
+     time and never remembers the authorization.
+
+     The programs are set-user-ID @GKEY_USER@ and connect to the bus as
+     that account, the owner of these actions, which lets them describe
+     each request (the web site, the passkeys to delete) in the dialog
+     instead of the fixed messages below. -->
 <policyconfig>
   <vendor>gkey</vendor>
   <vendor_url>https://github.com/Krishap-s/gkey</vendor_url>
@@ -18,6 +23,7 @@
       <allow_inactive>no</allow_inactive>
       <allow_active>auth_self</allow_active>
     </defaults>
+    <annotate key="org.freedesktop.policykit.owner">unix-user:@GKEY_USER@</annotate>
   </action>
 
   <action id="io.github.krishap_s.gkey.sign-in">
@@ -28,6 +34,7 @@
       <allow_inactive>no</allow_inactive>
       <allow_active>auth_self</allow_active>
     </defaults>
+    <annotate key="org.freedesktop.policykit.owner">unix-user:@GKEY_USER@</annotate>
   </action>
 
   <action id="io.github.krishap_s.gkey.reset">
@@ -38,5 +45,19 @@
       <allow_inactive>no</allow_inactive>
       <allow_active>auth_self</allow_active>
     </defaults>
+    <annotate key="org.freedesktop.policykit.owner">unix-user:@GKEY_USER@</annotate>
+  </action>
+
+  <!-- The commands of the gkey program, which may also run in a
+       terminal or over SSH, where pkttyagent answers. -->
+  <action id="io.github.krishap_s.gkey.manage">
+    <description>Manage your passkeys</description>
+    <message>Authenticate to view or change your passkeys stored in gkey.</message>
+    <defaults>
+      <allow_any>auth_self</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.owner">unix-user:@GKEY_USER@</annotate>
   </action>
 </policyconfig>

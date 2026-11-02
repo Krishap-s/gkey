@@ -20,9 +20,11 @@
 use std::ffi::CStr;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::AtomicBool;
 
 use gkey::getopt::{self, HasArg, Item, Opt};
 use gkey::keystore::{self, hex, Keystore};
+use gkey::polkit::{display_text, Polkit, TtyAgent, ACTION_MANAGE};
 use gkey::tpm::{self, Tpm};
 use gkey::{privilege, PACKAGE_BUGREPORT};
 
@@ -71,7 +73,8 @@ Options:
       --help          display this help and exit
       --version       output version information and exit
 
-Private keys never leave the TPM, so credentials cannot be exported.
+Every command asks you to authenticate through polkit first.  Private keys
+never leave the TPM, so credentials cannot be exported.
 
 Report bugs to: <{PACKAGE_BUGREPORT}>
 ",
@@ -150,26 +153,71 @@ fn list(store: &Keystore) {
     }
 }
 
-fn delete(tpm: &mut Tpm, store: &mut Keystore, prefixes: &[String]) -> Result<(), String> {
+/// Find the credentials designated by `prefixes`, each of which must
+/// match exactly one.
+fn resolve(store: &Keystore, prefixes: &[String]) -> Result<Vec<usize>, String> {
     if prefixes.is_empty() {
         return Err("missing credential ID".into());
     }
-    let mut doomed = Vec::new();
+    let mut found = Vec::new();
     for prefix in prefixes {
-        let found = store.find_prefix(prefix);
-        match found.as_slice() {
+        match store.find_prefix(prefix).as_slice() {
             [] => return Err(format!("no credential matches '{prefix}'")),
-            [index] => doomed.push(*index),
+            [index] => found.push(*index),
             _ => return Err(format!("'{prefix}' matches several credentials")),
         }
     }
-    doomed.sort_unstable();
-    doomed.dedup();
+    found.sort_unstable();
+    found.dedup();
+    Ok(found)
+}
+
+/// The authentication message for deleting the credentials `doomed`.
+fn delete_message(store: &Keystore, doomed: &[usize]) -> String {
+    let describe = |index: &usize| {
+        let c = &store.credentials[*index];
+        let account = c
+            .user_name
+            .as_deref()
+            .or(c.user_display_name.as_deref())
+            .unwrap_or("unnamed account");
+        format!(
+            "{} ({})",
+            display_text(&c.rp_id, 253),
+            display_text(account, 64)
+        )
+    };
+    match doomed {
+        [one] => format!("Delete your passkey for {}?", describe(one)),
+        many => {
+            let names: Vec<String> = many.iter().take(5).map(describe).collect();
+            let more = if many.len() > 5 { ", ..." } else { "" };
+            format!(
+                "Delete {} passkeys: {}{more}?",
+                many.len(),
+                names.join(", ")
+            )
+        }
+    }
+}
+
+fn delete(tpm: &mut Tpm, store: &mut Keystore, doomed: Vec<usize>) -> Result<(), String> {
     for index in doomed.into_iter().rev() {
         let credential = store.credentials.remove(index);
         println!("deleted {} ({})", credential.id_hex(), credential.rp_id);
     }
     store.save(tpm).map_err(|e| e.to_string())
+}
+
+/// Ask the user, through polkit, to allow what `message` describes.
+fn authorize(polkit: &Polkit, message: &str) -> Result<(), String> {
+    // Answers in the terminal when no graphical agent serves the user.
+    let _agent = TtyAgent::start(polkit);
+    match polkit.check(ACTION_MANAGE, message, &AtomicBool::new(false)) {
+        Ok(Some(true)) => Ok(()),
+        Ok(_) => Err("not authorized".into()),
+        Err(err) => Err(err.to_string()),
+    }
 }
 
 fn info(tpm: &mut Tpm, dir: &std::path::Path) -> Result<(), String> {
@@ -202,32 +250,51 @@ fn run(
         return Err(format!("extra operand '{}'", arguments[0]));
     }
     let mut tpm = Tpm::open(&tcti).map_err(|e| e.to_string())?;
-    // The TPM is open: give up the gkey group before touching any file.
+    // Connect to polkit while running as gkey, the owner of gkey's
+    // actions, so that the authentication dialog may describe the
+    // request.  The runtime keeps serving the connection.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .map_err(|e| format!("cannot start the event loop: {e}"))?;
+    let polkit = runtime
+        .block_on(Polkit::connect())
+        .map_err(|e| e.to_string())?;
+    // The TPM and the bus are open: give up the gkey account before
+    // touching any file.
     if privileged {
-        privilege::drop_group().map_err(|e| e.to_string())?;
+        privilege::drop_privileges().map_err(|e| e.to_string())?;
     }
     match command {
         "init" => {
+            authorize(&polkit, "Create a gkey keystore for your passkeys?")?;
             Keystore::create(&dir, &mut tpm).map_err(|e| e.to_string())?;
             println!("created keystore in {}", dir.display());
             Ok(())
         }
-        "info" => info(&mut tpm, &dir),
+        "info" => {
+            authorize(&polkit, "Show information about your gkey keystore?")?;
+            info(&mut tpm, &dir)
+        }
         "list" => {
+            authorize(&polkit, "List the passkeys stored in gkey?")?;
             let store = Keystore::open(&dir, &mut tpm).map_err(|e| e.to_string())?;
             list(&store);
             Ok(())
         }
         "delete" => {
             let mut store = Keystore::open(&dir, &mut tpm).map_err(|e| e.to_string())?;
-            delete(&mut tpm, &mut store, arguments)
+            let doomed = resolve(&store, arguments)?;
+            authorize(&polkit, &delete_message(&store, &doomed))?;
+            delete(&mut tpm, &mut store, doomed)
         }
         _ => unreachable!(),
     }
 }
 
 fn main() -> ExitCode {
-    // Anyone may run this set-group-ID program with any environment, so
+    // Anyone may run this set-user-ID program with any environment, so
     // forget the variables that could redirect it before anything reads
     // them.
     let privileged = privilege::is_privileged();
@@ -267,8 +334,8 @@ fn main() -> ExitCode {
     let tcti = if privileged {
         if tcti.is_some() {
             return try_help(&format!(
-                "option '--tcti' is not allowed when {PROGRAM} runs set-group-ID {}",
-                privilege::GKEY_GROUP
+                "option '--tcti' is not allowed when {PROGRAM} runs set-user-ID {}",
+                privilege::GKEY_USER
             ));
         }
         if let Some(warning) = privilege::membership_warning() {

@@ -15,10 +15,12 @@ primary key derived from the TPM's owner seed.  The credential list is
 encrypted with AES-256-GCM under a key sealed to the TPM.  The user
 authenticates for every operation in the desktop's polkit dialog.
 
-Both programs are installed set-group-ID `gkey`, the only group allowed
-to use the TPM and `/dev/uhid`.  They open those devices, then drop the
-group for good, so programs running as you, malware included, can
-neither use the TPM nor create HID devices.
+Both programs are installed set-user-ID `gkey`, the only account allowed
+to use the TPM and `/dev/uhid`.  They open those devices and connect to
+polkit, then drop back to you for good, so programs running as you,
+malware included, can neither use the TPM nor create HID devices.  As
+the owner of gkey's polkit actions, the `gkey` account lets the
+authentication dialog name the web site, or the passkeys to delete.
 
 ## Building
 
@@ -40,7 +42,7 @@ relying party.  See the file `INSTALL` for details.
 ## Setting up
 
 `sudo make install` creates the `gkey` account and makes both programs
-set-group-ID.  Then:
+set-user-ID.  Then:
 
 ```sh
 sudo modprobe uhid

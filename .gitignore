@@ -41,6 +41,7 @@ result
 /gkey.service
 /70-gkey.rules
 /gkey.sysusers
+/io.github.krishap_s.gkey.policy
 /doc/gkey.info
 /doc/gkey.html
 /doc/version.texi

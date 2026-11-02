@@ -37,6 +37,7 @@ use sha2::{Digest, Sha256};
 
 use crate::ctaphid::{Request, STATUS_PROCESSING, STATUS_UPNEEDED};
 use crate::keystore::{Credential, Keystore};
+use crate::polkit::display_text;
 use crate::prelude::*;
 use crate::tpm::Tpm;
 use crate::verify::{Kind, Operation, Outcome, Verifier};
@@ -77,6 +78,10 @@ const FLAG_UV: u8 = 0x04;
 const FLAG_AT: u8 = 0x40;
 const CREDENTIAL_ID_SIZE: usize = 16;
 const MAX_MESSAGE_SIZE: i64 = crate::ctaphid::MAX_MESSAGE_SIZE as i64;
+/// Longest relying party ID and account name shown to the user; a DNS
+/// name has at most 253 characters.
+const MAX_SHOWN_RP_ID: usize = 253;
+const MAX_SHOWN_ACCOUNT: usize = 64;
 /// How long the platform has to fetch the remaining assertions.
 const NEXT_ASSERTION_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -395,7 +400,10 @@ impl Authenticator {
                 self.consent(
                     Kind::Presence,
                     Operation::Create,
-                    &format!("You already have a passkey for {rp_id} in gkey."),
+                    &format!(
+                        "You already have a passkey for {} in gkey.",
+                        display_text(&rp_id, MAX_SHOWN_RP_ID)
+                    ),
                     ctx,
                 )?;
                 return Err(CTAP2_ERR_CREDENTIAL_EXCLUDED);
@@ -406,7 +414,11 @@ impl Authenticator {
             .as_deref()
             .or(user_display_name.as_deref())
             .unwrap_or("unnamed account");
-        let description = format!("Create a passkey for {rp_id}?\n\nAccount: {account}");
+        let description = format!(
+            "Create a passkey for {}?\n\nAccount: {}",
+            display_text(&rp_id, MAX_SHOWN_RP_ID),
+            display_text(account, MAX_SHOWN_ACCOUNT)
+        );
         let kind = if options.uv {
             Kind::Verification
         } else {
@@ -521,7 +533,11 @@ impl Authenticator {
             self.consent(
                 Kind::Verification,
                 Operation::SignIn,
-                &format!("Sign in to {rp_id}?\n\nAccount: {account}"),
+                &format!(
+                    "Sign in to {}?\n\nAccount: {}",
+                    display_text(&rp_id, MAX_SHOWN_RP_ID),
+                    display_text(&account, MAX_SHOWN_ACCOUNT)
+                ),
                 ctx,
             )?;
             flags |= FLAG_UP | FLAG_UV;
@@ -529,7 +545,11 @@ impl Authenticator {
             self.consent(
                 Kind::Presence,
                 Operation::SignIn,
-                &format!("Sign in to {rp_id}?\n\nAccount: {account}"),
+                &format!(
+                    "Sign in to {}?\n\nAccount: {}",
+                    display_text(&rp_id, MAX_SHOWN_RP_ID),
+                    display_text(&account, MAX_SHOWN_ACCOUNT)
+                ),
                 ctx,
             )?;
             flags |= FLAG_UP;
@@ -699,7 +719,7 @@ impl Handle {
 
 /// Start the authenticator on its own thread.  The TPM connection is
 /// opened before this returns.  The keystore is only opened when
-/// requests arrive, so that a set-group-ID caller can drop its group
+/// requests arrive, so that a set-user-ID caller can drop its privileges
 /// first.
 pub fn spawn(tcti: String, keystore: PathBuf, verifier: Verifier) -> Result<Handle> {
     let (sender, receiver) = mpsc::channel::<Request>();

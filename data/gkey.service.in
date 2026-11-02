@@ -9,10 +9,10 @@ PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
-# gkey-service relies on being set-group-ID @GKEY_GROUP@ to use the TPM.
+# gkey-service relies on being set-user-ID @GKEY_USER@ to use the TPM.
 # Do not set NoNewPrivileges=, or options that imply it in user units
 # (SystemCallFilter=, RestrictNamespaces=, ProtectKernel*= and so on):
-# the kernel would then ignore the set-group-ID bit.
+# the kernel would then ignore the set-user-ID bit.
 ExecStart=@bindir@/gkey-service
 Restart=on-failure
 

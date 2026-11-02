@@ -118,11 +118,13 @@ impl Verifier {
             Method::Command(command) => run_command(command, kind, operation, description, cancel)?,
             // polkit cannot merely ask for confirmation, so presence
             // and verification are both an authentication.
-            Method::Polkit(polkit) => match polkit.check(operation.polkit_action(), cancel)? {
-                Some(true) => Outcome::Granted,
-                Some(false) => Outcome::Denied,
-                None => Outcome::Cancelled,
-            },
+            Method::Polkit(polkit) => {
+                match polkit.check(operation.polkit_action(), description, cancel)? {
+                    Some(true) => Outcome::Granted,
+                    Some(false) => Outcome::Denied,
+                    None => Outcome::Cancelled,
+                }
+            }
         };
         if cancel.load(Ordering::Relaxed) {
             return Ok(Outcome::Cancelled);

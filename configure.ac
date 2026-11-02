@@ -36,19 +36,20 @@ AC_PATH_PROG([MAKEINFO], [makeinfo], [makeinfo])
 AC_PATH_PROG([TEXI2DVI], [texi2dvi], [texi2dvi])
 AC_PATH_PROG([INSTALL_INFO], [install-info], [install-info])
 
-# udev grants the TPM to the gkey group with setfacl (from the acl
+# udev grants the TPM to the gkey account with setfacl (from the acl
 # package).
 AC_PATH_PROG([SETFACL], [setfacl], [no])
 AS_IF([test "x$SETFACL" = xno],
       [AC_MSG_WARN([setfacl not found; assuming /usr/bin/setfacl for the udev rule])
        SETFACL=/usr/bin/setfacl])
 
-AC_ARG_WITH([gkey-group],
-  [AS_HELP_STRING([--with-gkey-group=NAME],
-                  [install the programs set-group-ID NAME, the only group allowed
-                   to use the TPM and /dev/uhid @<:@gkey@:>@])],
-  [GKEY_GROUP=$withval], [GKEY_GROUP=gkey])
-AC_SUBST([GKEY_GROUP])
+AC_ARG_WITH([gkey-user],
+  [AS_HELP_STRING([--with-gkey-user=NAME],
+                  [install the programs set-user-ID NAME, the only account allowed
+                   to use the TPM and /dev/uhid, and the owner of the polkit
+                   actions @<:@gkey@:>@])],
+  [GKEY_USER=$withval], [GKEY_USER=gkey])
+AC_SUBST([GKEY_USER])
 
 AC_ARG_WITH([systemduserunitdir],
   [AS_HELP_STRING([--with-systemduserunitdir=DIR],

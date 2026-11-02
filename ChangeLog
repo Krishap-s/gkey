@@ -1,5 +1,34 @@
 2026-11-02  Krishap  <krishapbusiness@gmail.com>
 
+	Install the programs set-user-ID gkey, the owner of the polkit
+	actions, so that the dialog can name the web site; ask polkit
+	before every command of gkey.
+
+	* src/privilege.rs (GKEY_USER, drop_privileges): Replace GKEY_GROUP
+	and drop_group; drop the user ID too.
+	(privileged_memberships): Only tss gives direct TPM access now.
+	* src/polkit.rs (Polkit::check): Pass the message as the
+	polkit.message detail when polkit trusts the connection.
+	(ACTION_MANAGE, display_text, TtyAgent): New.
+	* src/verify.rs (Verifier::ask): Pass the description to polkit.
+	* src/ctap2.rs: Neutralize markup in the site and account names.
+	* src/bin/gkey/main.rs (authorize, resolve, delete_message): New.
+	(run): Connect to polkit before dropping privileges, and ask before
+	every command.
+	* src/bin/gkey-service/main.rs: Use the set-user-ID names.
+	* data/io.github.krishap_s.gkey.policy: Rename to...
+	* data/io.github.krishap_s.gkey.policy.in: ...this.  Name the gkey
+	account as the owner of every action.  New manage action.
+	* data/70-gkey.rules.in: Grant /dev/uhid and the TPM to the gkey
+	account instead of the group.
+	* data/gkey.sysusers.in, data/gkey.service.in: Update.
+	* configure.ac: Replace --with-gkey-group with --with-gkey-user.
+	* Makefile.in (install-setuid): Replace install-setgid; mode 4755.
+	Generate the polkit policy.
+	* doc/gkey.texi, README.md, INSTALL, DESIGN.md, NEWS: Update.
+
+2026-11-02  Krishap  <krishapbusiness@gmail.com>
+
 	Move the socket authenticator from examples/ to tests/helpers/.
 
 	* tests/helpers/socket-authenticator.rs: Moved from

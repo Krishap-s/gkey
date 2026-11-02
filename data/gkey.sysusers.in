@@ -1,4 +1,4 @@
-# The account owning the gkey programs, see sysusers.d(5).  It creates
-# the @GKEY_GROUP@ group the programs are set-group-ID to; nothing runs
-# as this user.
-u @GKEY_GROUP@ - "gkey TPM authenticator" - -
+# The account the gkey programs are set-user-ID to, see sysusers.d(5).
+# Only it may use the TPM and /dev/uhid; the programs run as it only
+# until they have opened those devices.
+u @GKEY_USER@ - "gkey TPM authenticator" - -

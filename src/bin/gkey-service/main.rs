@@ -160,7 +160,7 @@ fn init_logging(verbosity: i32) {
 }
 
 fn main() -> ExitCode {
-    // Anyone may run this set-group-ID program with any environment, so
+    // Anyone may run this set-user-ID program with any environment, so
     // forget the variables that could redirect it before anything reads
     // them or starts a thread.
     let privileged = privilege::is_privileged();
@@ -205,7 +205,7 @@ fn main() -> ExitCode {
 
     if privileged {
         // These would let the caller pick another TPM library, device
-        // or consent method while the program holds the gkey group.
+        // or consent method while the program runs as gkey.
         let refused = [
             ("--tcti", tcti.is_some()),
             ("--uhid", uhid.as_path() != std::path::Path::new(UHID_PATH)),
@@ -213,8 +213,8 @@ fn main() -> ExitCode {
         ];
         if let Some((option, _)) = refused.iter().find(|(_, given)| *given) {
             return try_help(&format!(
-                "option '{option}' is not allowed when {PROGRAM} runs set-group-ID {}",
-                privilege::GKEY_GROUP
+                "option '{option}' is not allowed when {PROGRAM} runs set-user-ID {}",
+                privilege::GKEY_USER
             ));
         }
         if let Some(warning) = privilege::membership_warning() {
@@ -301,10 +301,10 @@ async fn serve(
         let device = UHIDDevice::create(&params, &uhid)
             .await
             .map_err(|e| format!("{}: {e}", uhid.display()))?;
-        // The TPM and the UHID device are open: give up the gkey group
-        // before touching any file, in particular the keystore.
+        // The TPM, the UHID device and the bus are open: give up the gkey
+        // account before touching any file, in particular the keystore.
         if privileged {
-            privilege::drop_group().map_err(|e| e.to_string())?;
+            privilege::drop_privileges().map_err(|e| e.to_string())?;
         }
         log::info!("authenticator ready");
         let mut server = Server::new(device, authenticator.sender());
