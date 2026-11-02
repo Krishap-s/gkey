@@ -1,5 +1,15 @@
 2026-11-02  Krishap  <krishapbusiness@gmail.com>
 
+	Test OpenSSH's calls with python-fido2 instead of libfido2.
+
+	* tests/helpers/libfido2-check.c: Remove.
+	* tests/fido2-client.py (check_openssh): New.  Replay the calls of
+	sk_enroll and sk_sign, asserting what libfido2 checks.
+	* tests/run-tests.sh, Makefile.in (dist): Drop the C program.
+	* DESIGN.md: Update.
+
+2026-11-02  Krishap  <krishapbusiness@gmail.com>
+
 	Support OpenSSH's ecdsa-sk keys.
 
 	* src/ctap2.rs (make_credential): Return a packed self

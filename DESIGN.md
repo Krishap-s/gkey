@@ -108,9 +108,13 @@ WebAuthn:
 - silent assertions (`up=false`) to find the device holding a key
   handle before every signature, which therefore get no dialog.
 
-`tests/helpers/libfido2-check.c` runs the calls of OpenSSH's `sk_enroll`
-and `sk_sign` through libfido2 against the real authenticator.  Ed25519
-is impossible without leaving the TPM: no TPM curve supports it.
+`tests/fido2-client.py` replays the calls of OpenSSH's `sk_enroll` and
+`sk_sign` with python-fido2 against the real authenticator, asserting
+what libfido2 checks (the self attestation signature, the extension
+output, the flags).  It is not libfido2 itself: the implementation was
+also checked once against libfido2, which found the missing
+attestation.  Ed25519 is impossible without leaving the TPM: no TPM
+curve supports it.
 
 ## Future work
 

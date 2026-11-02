@@ -247,7 +247,7 @@ dist: info
 	mkdir -p $(distdir)/data $(distdir)/doc $(distdir)/tests
 	cp -R $(srcdir)/src $(distdir)/
 	mkdir -p $(distdir)/tests/helpers
-	cp $(srcdir)/tests/helpers/*.rs $(srcdir)/tests/helpers/*.c $(distdir)/tests/helpers/
+	cp $(srcdir)/tests/helpers/*.rs $(distdir)/tests/helpers/
 	cp $(srcdir)/tests/*.rs $(srcdir)/tests/*.py $(srcdir)/tests/*.sh $(distdir)/tests/
 	for f in $(DISTFILES); do \
 	  if test -f $$f; then cp $$f $(distdir)/$$f; \
