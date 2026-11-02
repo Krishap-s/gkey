@@ -131,9 +131,34 @@ user's password (@pxref{User consent}).  gkey never sees the
 password.
 @end itemize
 
-gkey cannot protect against software running with the privileges of
-the user, which can talk to the TPM like gkey does, nor against an
-attacker with root privileges.  Clearing the TPM (for instance from the
+@cindex set-group-ID
+Only the @samp{gkey} group may use the TPM and @file{/dev/uhid}, and
+nobody belongs to it.  @command{gkey-service} and @command{gkey} are
+installed set-group-ID @samp{gkey}: each opens the devices it needs,
+then gives up the group for good, keeping only the open devices, and
+only then reads or writes the keystore, with the user's own
+permissions.  Programs running as the user, malware included, can
+therefore neither use the TPM to unseal the keystore or sign, nor
+create HID devices such as fake keyboards.  The kernel prevents them
+from debugging the set-group-ID processes or reading their memory.
+
+Anyone may run the set-group-ID programs with any arguments and
+environment.  They therefore refuse the options that would choose
+another TPM connection, device or consent method
+(@option{--tcti}, @option{--uhid}, @option{--verify=command}), and
+ignore the environment variables that would (@env{GKEY_TCTI},
+@env{TPM2TOOLS_TCTI}, @env{TCTI}, @env{DBUS_SYSTEM_BUS_ADDRESS} and
+the @env{TSS2_*} variables of the TPM library).  They warn when the
+user belongs to the @samp{gkey} or @samp{tss} group, since programs
+running as such a user can use the TPM directly.
+
+Malware running as the user can still delete the keystore or put back
+an older copy, since it is the user's file, but cannot use it.  It can
+also send requests to the security key, through the browser's device
+or its own copy of @command{gkey-service}, but each one needs the
+user's password in the polkit dialog.  gkey cannot protect against an
+attacker with root privileges, nor against programs in the @samp{tss}
+group able to read the keystore.  Clearing the TPM (for instance from the
 firmware setup) changes the owner seed and makes every stored passkey
 permanently unusable; keep another way to sign in to important
 accounts.
@@ -143,44 +168,59 @@ accounts.
 @cindex setting up
 @cindex permissions
 
-gkey-service runs as an ordinary user, and needs:
+gkey-service runs as an ordinary user, as a systemd user service.
+@samp{make install}, run as root, installs:
 
 @itemize @bullet
 @item
-Access to the TPM resource manager @file{/dev/tpmrm0}.  Most
-distributions grant it to the members of the @samp{tss} group:
-@example
-sudo usermod -a -G tss $USER
-@end example
+@command{gkey-service} and @command{gkey}, owned by the @samp{gkey}
+account and group, with mode 2755 (set-group-ID).  It creates the
+account with @command{systemd-sysusers} if needed.  When installing
+into a staging directory (@env{DESTDIR}) or as an ordinary user, it
+prints the commands to run as root instead.
 
 @item
-Access to @file{/dev/uhid}, which the udev rule installed by gkey
-grants to the members of the @samp{gkey} group, and the @samp{uhid}
-kernel module, which the installed @file{modules-load.d} file loads at
-boot:
-@example
-sudo groupadd --system gkey
-sudo usermod -a -G gkey $USER
-sudo modprobe uhid
-@end example
-Membership of this group lets the user's programs create any kind of
-HID device, keyboards included.
+A udev rule granting the @samp{gkey} group @file{/dev/uhid}, and
+@file{/dev/tpmrm0} through an access control list, which leaves the
+distribution's own permissions (usually group @samp{tss}) in place.
+The rule needs @command{setfacl}, from the @samp{acl} package.
 
 @item
-polkit, with the actions installed by gkey, and a polkit
-authentication agent in the user's desktop session, as GNOME, KDE
-Plasma and most other desktops provide.
+A @file{modules-load.d} file loading the @samp{uhid} kernel module at
+boot, and the polkit actions.
 @end itemize
 
-Log out and back in for the group changes to take effect, then enable
-the service:
+Then apply the udev rule to the existing devices, make sure no user is
+in the @samp{gkey} or @samp{tss} group, and enable the service:
+
+@example
+sudo modprobe uhid
+sudo udevadm control --reload
+sudo udevadm trigger --subsystem-match=tpmrm --subsystem-match=misc
+sudo gpasswd -d $USER gkey      # if you were a member
+sudo gpasswd -d $USER tss       # if you were a member
+@end example
+
+Log out and back in for the group changes to take effect, then:
 
 @example
 systemctl --user enable --now gkey.service
 @end example
 
-The keystore is created the first time gkey-service starts.  Browsers
+Users also need a polkit authentication agent in their desktop
+session, as GNOME, KDE Plasma and most other desktops provide.  The
+keystore is created when the first passkey is registered.  Browsers
 then offer gkey like any other security key.
+
+The service must not run with @code{NoNewPrivileges=}, or with any
+systemd option that implies it in user units, such as
+@code{SystemCallFilter=}: the kernel would ignore the set-group-ID
+bit.
+
+@cindex Nix
+The Nix store cannot hold set-group-ID files.  On NixOS, install the
+programs through @code{security.wrappers}, with
+@code{setgid = true} and @code{group = "gkey"}.
 
 @node Invoking gkey-service
 @chapter Invoking gkey-service
@@ -206,13 +246,19 @@ described by @var{conf}, such as @samp{device:/dev/tpmrm0} (the
 default) or @samp{swtpm:host=localhost,port=2321} for a software TPM.
 Without this option the environment variables @env{GKEY_TCTI},
 @env{TPM2TOOLS_TCTI} and @env{TCTI} are consulted, in that order.
+Refused, and the variables ignored, when the program runs
+set-group-ID (@pxref{Security model}); it then always uses
+@samp{device:/dev/tpmrm0}.
 
 @item --uhid=@var{file}
 Create the device through @var{file} instead of @file{/dev/uhid}.
+Refused when the program runs set-group-ID.
 
 @item --verify=@var{method}
 Obtain user consent with @var{method}, @samp{polkit} (the default) or
-@samp{command}.  @xref{User consent}.
+@samp{command}.  @xref{User consent}.  The @samp{command} method is
+refused when the program runs set-group-ID, since it would let anyone
+grant consent.
 
 @item --verify-command=@var{command}
 Run @var{command} to obtain user consent.  Implies
@@ -342,7 +388,11 @@ Lock file used to serialize access to the keystore.
 The polkit actions.
 
 @item /usr/lib/udev/rules.d/70-gkey.rules
-Grants the @samp{gkey} group access to @file{/dev/uhid}.
+Grants the @samp{gkey} group access to @file{/dev/uhid} and
+@file{/dev/tpmrm0}.
+
+@item /usr/lib/sysusers.d/gkey.conf
+Defines the @samp{gkey} account and group owning the programs.
 @end table
 
 @node Reporting bugs

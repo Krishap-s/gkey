@@ -32,6 +32,7 @@ pub mod getopt;
 pub mod keystore;
 pub mod polkit;
 pub mod prelude;
+pub mod privilege;
 pub mod tpm;
 pub mod uhid;
 pub mod verify;

@@ -1,5 +1,28 @@
 2026-11-02  Krishap  <krishapbusiness@gmail.com>
 
+	Install the programs set-group-ID gkey, so that programs running
+	as the user cannot use the TPM.
+
+	* src/privilege.rs: New file.  Detect set-group-ID runs, remove
+	unsafe environment variables, drop the group, warn about group
+	memberships that defeat the protection.
+	* src/bin/gkey-service/main.rs (main): Refuse --tcti, --uhid and
+	--verify=command when set-group-ID; always use /dev/tpmrm0.
+	(serve): Drop the group once the TPM and UHID device are open.
+	* src/bin/gkey/main.rs (main, run): Likewise, after opening the TPM.
+	* src/ctap2.rs (spawn): Do not open the keystore at startup.
+	* data/70-gkey.rules: Rename to...
+	* data/70-gkey.rules.in: ...this.  Grant the gkey group the TPM
+	through an ACL.
+	* data/gkey.sysusers.in: New file.
+	* data/gkey.service.in: Warn against NoNewPrivileges.
+	* configure.ac: Look for setfacl.  New options --with-gkey-group
+	and --with-sysusersdir.
+	* Makefile.in (install-setgid): New target.
+	* doc/gkey.texi, README.md, INSTALL, DESIGN.md, NEWS: Update.
+
+2026-11-02  Krishap  <krishapbusiness@gmail.com>
+
 	Ask polkit for consent instead of pinentry and PAM.
 
 	* src/polkit.rs: New file.  polkit client checking authorizations

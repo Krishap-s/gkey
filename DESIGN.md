@@ -33,6 +33,27 @@ each time gkey connects.  Nothing is stored in TPM non-volatile memory.
 - The keystore records a digest of the primary public key, to report
   a cleared or different TPM clearly.
 
+## Privileges
+
+Only the `gkey` group may use the TPM (an ACL on `/dev/tpmrm0`, set by
+udev, which keeps the distribution's `tss` permissions) and
+`/dev/uhid`, and nobody belongs to it.  `gkey-service` and `gkey` are
+installed `gkey:gkey`, mode 2755.  At startup they:
+
+1. remove the environment variables that would redirect them (the
+   TCTI variables, `TSS2_*`, `DBUS_SYSTEM_BUS_ADDRESS`) and refuse the
+   options that would (`--tcti`, `--uhid`, `--verify=command`), since
+   anyone may run them with any arguments;
+2. open the TPM, and for the service `/dev/uhid`;
+3. drop the group for good with `setresgid`, and check it is gone;
+4. only then open the keystore, with the user's own permissions.
+
+Programs running as the user, malware included, therefore cannot use
+the TPM or create HID devices, and the kernel keeps them from
+debugging the set-group-ID processes.  They can still delete or roll
+back the keystore file, and send requests that each need the user's
+password in the polkit dialog.
+
 ## Keystore
 
 A single CBOR file in `$XDG_DATA_HOME/gkey/keystore` holds the sealed

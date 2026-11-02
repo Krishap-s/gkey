@@ -1,0 +1,15 @@
+# udev rules for gkey.
+#
+# gkey-service and gkey are installed set-group-ID @GKEY_GROUP@.  Only
+# that group may create virtual HID devices and use the TPM, so that
+# programs running as the user, malware included, can do neither.  Do
+# not add people to the @GKEY_GROUP@ group.
+#
+# The FIDO device that gkey-service creates is made accessible to the
+# logged in user by systemd's 60-fido-id.rules.
+
+KERNEL=="uhid", SUBSYSTEM=="misc", GROUP="@GKEY_GROUP@", MODE="0660"
+
+# Grant the TPM resource manager to the group with an ACL, keeping the
+# distribution's own permissions (usually group tss) in place.
+KERNEL=="tpmrm[0-9]*", SUBSYSTEM=="tpmrm", RUN+="@SETFACL@ -m g:@GKEY_GROUP@:rw /dev/%k"

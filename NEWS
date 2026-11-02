@@ -17,6 +17,12 @@ to the TPM.  TPM commands use a salted, encrypted session.
 The user authenticates in the desktop's polkit dialog before every
 operation, or an external command given with --verify-command decides.
 
+gkey-service and gkey are installed set-group-ID gkey, the only group
+the udev rule lets use the TPM and /dev/uhid.  They drop the group
+after opening the devices, so programs running as the user cannot use
+the TPM or create HID devices.  Users no longer join the tss or gkey
+groups.
+
 New program gkey lists, inspects and deletes credentials.
 
 Both programs follow the GNU conventions for options, --help and

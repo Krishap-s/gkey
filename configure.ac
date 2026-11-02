@@ -36,10 +36,28 @@ AC_PATH_PROG([MAKEINFO], [makeinfo], [makeinfo])
 AC_PATH_PROG([TEXI2DVI], [texi2dvi], [texi2dvi])
 AC_PATH_PROG([INSTALL_INFO], [install-info], [install-info])
 
+# udev grants the TPM to the gkey group with setfacl (from the acl
+# package).
+AC_PATH_PROG([SETFACL], [setfacl], [no])
+AS_IF([test "x$SETFACL" = xno],
+      [AC_MSG_WARN([setfacl not found; assuming /usr/bin/setfacl for the udev rule])
+       SETFACL=/usr/bin/setfacl])
+
+AC_ARG_WITH([gkey-group],
+  [AS_HELP_STRING([--with-gkey-group=NAME],
+                  [install the programs set-group-ID NAME, the only group allowed
+                   to use the TPM and /dev/uhid @<:@gkey@:>@])],
+  [GKEY_GROUP=$withval], [GKEY_GROUP=gkey])
+AC_SUBST([GKEY_GROUP])
+
 AC_ARG_WITH([systemduserunitdir],
   [AS_HELP_STRING([--with-systemduserunitdir=DIR],
                   [install the systemd user unit in DIR @<:@PREFIX/lib/systemd/user@:>@])],
   [systemduserunitdir=$withval], [systemduserunitdir='${prefix}/lib/systemd/user'])
+AC_ARG_WITH([sysusersdir],
+  [AS_HELP_STRING([--with-sysusersdir=DIR],
+                  [install the account definition in DIR @<:@PREFIX/lib/sysusers.d@:>@])],
+  [sysusersdir=$withval], [sysusersdir='${prefix}/lib/sysusers.d'])
 AC_ARG_WITH([udevrulesdir],
   [AS_HELP_STRING([--with-udevrulesdir=DIR],
                   [install udev rules in DIR @<:@PREFIX/lib/udev/rules.d@:>@])],
@@ -53,6 +71,7 @@ AC_ARG_WITH([polkitactiondir],
                   [install the polkit actions in DIR @<:@DATADIR/polkit-1/actions@:>@])],
   [polkitactiondir=$withval], [polkitactiondir='${datadir}/polkit-1/actions'])
 AC_SUBST([systemduserunitdir])
+AC_SUBST([sysusersdir])
 AC_SUBST([udevrulesdir])
 AC_SUBST([modulesloaddir])
 AC_SUBST([polkitactiondir])

@@ -35,6 +35,7 @@ dvidir = @dvidir@
 pdfdir = @pdfdir@
 psdir = @psdir@
 systemduserunitdir = @systemduserunitdir@
+sysusersdir = @sysusersdir@
 udevrulesdir = @udevrulesdir@
 modulesloaddir = @modulesloaddir@
 polkitactiondir = @polkitactiondir@
@@ -51,35 +52,55 @@ INSTALL = install
 INSTALL_PROGRAM = $(INSTALL)
 INSTALL_DATA = $(INSTALL) -m 644
 PYTHON3 = python3
+SETFACL = @SETFACL@
+SYSTEMD_SYSUSERS = systemd-sysusers
+
+# The programs are installed owned by this account and group, mode
+# 2755: set-group-ID, so that they alone can use the TPM and /dev/uhid.
+GKEY_GROUP = @GKEY_GROUP@
 
 PROGRAMS = gkey gkey-service
 RELEASE = $(CARGO_TARGET_DIR)/release
-CARGO_BUILD = $(CARGO) build --release --manifest-path $(srcdir)/Cargo.toml \
+CARGO_BUILD = GKEY_GROUP='$(GKEY_GROUP)' $(CARGO) build --release --manifest-path $(srcdir)/Cargo.toml \
 	--target-dir $(CARGO_TARGET_DIR) $(CARGOFLAGS)
 
 DISTFILES = AUTHORS COPYING ChangeLog DESIGN.md INSTALL NEWS README.md \
 	Cargo.toml Cargo.lock Makefile.in configure configure.ac \
 	default.nix flake.nix flake.lock \
-	data/70-gkey.rules data/gkey-modules.conf data/gkey.service.in \
+	data/70-gkey.rules.in data/gkey.sysusers.in data/gkey-modules.conf \
+	data/gkey.service.in \
 	data/io.github.krishap_s.gkey.policy \
 	doc/gkey.texi doc/gkey.info doc/version.texi
 
 .PHONY: all build install install-strip installdirs uninstall clean mostlyclean \
 	distclean maintainer-clean check installcheck dist info dvi html pdf ps \
-	install-info install-dvi install-html install-pdf install-ps TAGS
+	install-info install-dvi install-html install-pdf install-ps install-setgid TAGS
 
-all: build gkey.service
+GENERATED = gkey.service 70-gkey.rules gkey.sysusers
+
+all: build $(GENERATED)
 
 build:
 	$(CARGO_BUILD) --bins
 
+SUBSTITUTE = sed -e 's|@bindir[@]|$(bindir)|g' -e 's|@GKEY_GROUP[@]|$(GKEY_GROUP)|g' \
+	-e 's|@SETFACL[@]|$(SETFACL)|g'
+
 gkey.service: $(srcdir)/data/gkey.service.in Makefile
-	sed -e 's|@bindir[@]|$(bindir)|g' $(srcdir)/data/gkey.service.in > $@.tmp
+	$(SUBSTITUTE) $(srcdir)/data/gkey.service.in > $@.tmp
+	mv $@.tmp $@
+
+70-gkey.rules: $(srcdir)/data/70-gkey.rules.in Makefile
+	$(SUBSTITUTE) $(srcdir)/data/70-gkey.rules.in > $@.tmp
+	mv $@.tmp $@
+
+gkey.sysusers: $(srcdir)/data/gkey.sysusers.in Makefile
+	$(SUBSTITUTE) $(srcdir)/data/gkey.sysusers.in > $@.tmp
 	mv $@.tmp $@
 
 installdirs:
 	mkdir -p $(DESTDIR)$(bindir) $(DESTDIR)$(systemduserunitdir) \
-	  $(DESTDIR)$(udevrulesdir) $(DESTDIR)$(modulesloaddir) \
+	  $(DESTDIR)$(sysusersdir) $(DESTDIR)$(udevrulesdir) $(DESTDIR)$(modulesloaddir) \
 	  $(DESTDIR)$(polkitactiondir)
 
 install: all installdirs
@@ -87,12 +108,32 @@ install: all installdirs
 	  $(INSTALL_PROGRAM) $(RELEASE)/$$p $(DESTDIR)$(bindir)/$$p || exit 1; \
 	done
 	$(INSTALL_DATA) gkey.service $(DESTDIR)$(systemduserunitdir)/gkey.service
-	$(INSTALL_DATA) $(srcdir)/data/70-gkey.rules $(DESTDIR)$(udevrulesdir)/70-gkey.rules
+	$(INSTALL_DATA) gkey.sysusers $(DESTDIR)$(sysusersdir)/gkey.conf
+	$(INSTALL_DATA) 70-gkey.rules $(DESTDIR)$(udevrulesdir)/70-gkey.rules
 	$(INSTALL_DATA) $(srcdir)/data/gkey-modules.conf $(DESTDIR)$(modulesloaddir)/gkey.conf
 	$(INSTALL_DATA) $(srcdir)/data/io.github.krishap_s.gkey.policy \
 	  $(DESTDIR)$(polkitactiondir)/io.github.krishap_s.gkey.policy
 	@if test -f doc/gkey.info || test -f $(srcdir)/doc/gkey.info; then \
 	  $(MAKE) install-info; \
+	fi
+	@$(MAKE) install-setgid
+
+# Make the programs set-group-ID.  This needs root and an existing
+# account; when installing into a staging directory (DESTDIR), or as
+# an ordinary user, say what remains to be done instead.  chown comes
+# first, since it clears the set-group-ID bit.
+install-setgid:
+	@programs='$(DESTDIR)$(bindir)/gkey $(DESTDIR)$(bindir)/gkey-service'; \
+	if test "`id -u`" = 0 && test -z '$(DESTDIR)'; then \
+	  if ! id '$(GKEY_GROUP)' > /dev/null 2>&1; then \
+	    $(SYSTEMD_SYSUSERS) $(sysusersdir)/gkey.conf || exit 1; \
+	  fi; \
+	  chown '$(GKEY_GROUP):$(GKEY_GROUP)' $$programs && chmod 2755 $$programs; \
+	else \
+	  echo "*** The programs must be set-group-ID $(GKEY_GROUP).  As root, run:"; \
+	  echo "***   systemd-sysusers $(sysusersdir)/gkey.conf"; \
+	  echo "***   chown $(GKEY_GROUP):$(GKEY_GROUP) $(bindir)/gkey $(bindir)/gkey-service"; \
+	  echo "***   chmod 2755 $(bindir)/gkey $(bindir)/gkey-service"; \
 	fi
 
 install-strip:
@@ -101,6 +142,7 @@ install-strip:
 uninstall:
 	for p in $(PROGRAMS); do rm -f $(DESTDIR)$(bindir)/$$p; done
 	rm -f $(DESTDIR)$(systemduserunitdir)/gkey.service
+	rm -f $(DESTDIR)$(sysusersdir)/gkey.conf
 	rm -f $(DESTDIR)$(udevrulesdir)/70-gkey.rules
 	rm -f $(DESTDIR)$(modulesloaddir)/gkey.conf
 	rm -f $(DESTDIR)$(polkitactiondir)/io.github.krishap_s.gkey.policy
@@ -194,7 +236,7 @@ TAGS:
 # Cleaning.
 
 mostlyclean:
-	rm -f gkey.service gkey.service.tmp
+	rm -f $(GENERATED) gkey.service.tmp 70-gkey.rules.tmp gkey.sysusers.tmp
 	rm -f doc/gkey.html doc/gkey.dvi doc/gkey.pdf doc/gkey.ps
 	rm -f doc/*.aux doc/*.cp doc/*.cps doc/*.fn doc/*.ky doc/*.log doc/*.pg \
 	  doc/*.toc doc/*.tp doc/*.vr

@@ -10,6 +10,7 @@ Requirements
     files (tss2-esys, tss2-tctildr, tss2-mu)
   * GNU Autoconf, when building from the version control repository
   * Texinfo, to build the manual
+  * setfacl (from the acl package), used by the installed udev rule
 
 At run time gkey needs a TPM 2.0 reachable through /dev/tpmrm0, the
 uhid kernel module, the D-Bus system bus, polkit, and a polkit
@@ -30,8 +31,16 @@ Basic Installation
 'configure' accepts the usual options, such as '--prefix=DIR' (default
 '/usr/local'), and in addition:
 
+'--with-gkey-group=NAME'
+     The account and group owning the programs, which are installed
+     set-group-ID to it, and the only group the udev rule lets use
+     the TPM and /dev/uhid (gkey).
+
 '--with-systemduserunitdir=DIR'
      Where to install the systemd user unit (PREFIX/lib/systemd/user).
+
+'--with-sysusersdir=DIR'
+     Where to install the account definition (PREFIX/lib/sysusers.d).
 
 '--with-udevrulesdir=DIR'
      Where to install the udev rule (PREFIX/lib/udev/rules.d).
@@ -45,6 +54,13 @@ Basic Installation
 When installing under /usr/local, udev, systemd and polkit may not
 look in the default directories; installing with '--prefix=/usr'
 avoids the problem.
+
+'make install' run as root makes the programs set-group-ID: it creates
+the account with systemd-sysusers if needed, then gives the programs to
+it with mode 2755.  Run as an ordinary user, or with DESTDIR set, it
+prints the commands to run as root instead, which packagers should do
+in their post-installation step.  The Nix store cannot hold
+set-group-ID files; on NixOS use 'security.wrappers'.
 
 The Makefile honours DESTDIR, and provides the standard targets
 'install-strip', 'uninstall', 'installcheck', 'info', 'html', 'pdf',

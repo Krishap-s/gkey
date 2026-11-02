@@ -19,12 +19,14 @@
 //! as a USB HID FIDO2 security key.
 
 use std::io::Write;
+use std::os::unix::fs::FileTypeExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use gkey::ctaphid::Server;
 use gkey::getopt::{self, HasArg, Item, Opt};
 use gkey::polkit::Polkit;
+use gkey::privilege;
 use gkey::uhid::{CreateParams, UHIDDevice, BUS_USB, UHID_PATH};
 use gkey::verify::{Method, Verifier};
 use gkey::{ctap2, keystore, tpm, PACKAGE_BUGREPORT};
@@ -158,6 +160,13 @@ fn init_logging(verbosity: i32) {
 }
 
 fn main() -> ExitCode {
+    // Anyone may run this set-group-ID program with any environment, so
+    // forget the variables that could redirect it before anything reads
+    // them or starts a thread.
+    let privileged = privilege::is_privileged();
+    if privileged {
+        privilege::sanitize_environment();
+    }
     let items = match getopt::parse(std::env::args().skip(1), OPTIONS) {
         Ok(items) => items,
         Err(message) => return try_help(&message),
@@ -194,6 +203,25 @@ fn main() -> ExitCode {
     }
     init_logging(verbosity);
 
+    if privileged {
+        // These would let the caller pick another TPM library, device
+        // or consent method while the program holds the gkey group.
+        let refused = [
+            ("--tcti", tcti.is_some()),
+            ("--uhid", uhid.as_path() != std::path::Path::new(UHID_PATH)),
+            ("--verify=command", method == "command"),
+        ];
+        if let Some((option, _)) = refused.iter().find(|(_, given)| *given) {
+            return try_help(&format!(
+                "option '{option}' is not allowed when {PROGRAM} runs set-group-ID {}",
+                privilege::GKEY_GROUP
+            ));
+        }
+        if let Some(warning) = privilege::membership_warning() {
+            log::warn!("{warning}");
+        }
+    }
+
     let command = match (method.as_str(), command) {
         ("polkit", _) => None,
         ("command", Some(command)) => Some(command),
@@ -207,7 +235,11 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let tcti = tpm::tcti_from_environment(tcti.as_deref());
+    let tcti = if privileged {
+        tpm::DEFAULT_TCTI.to_string()
+    } else {
+        tpm::tcti_from_environment(tcti.as_deref())
+    };
 
     // The authenticator thread waits for polkit's answers while the
     // event loop runs, which needs a multi-threaded runtime.
@@ -222,7 +254,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(serve(tcti, keystore_dir, uhid, command)) {
+    match runtime.block_on(serve(tcti, keystore_dir, uhid, command, privileged)) {
         Ok(()) => {
             log::info!("exiting");
             ExitCode::SUCCESS
@@ -239,6 +271,7 @@ async fn serve(
     keystore_dir: PathBuf,
     uhid: PathBuf,
     command: Option<String>,
+    privileged: bool,
 ) -> Result<(), String> {
     let method = match command {
         Some(command) => Method::Command(command),
@@ -258,9 +291,21 @@ async fn serve(
             country: 0,
             report_descriptor: REPORT_DESCRIPTOR.to_vec(),
         };
+        if privileged {
+            let metadata =
+                std::fs::metadata(&uhid).map_err(|e| format!("{}: {e}", uhid.display()))?;
+            if !metadata.file_type().is_char_device() {
+                return Err(format!("{} is not a character device", uhid.display()));
+            }
+        }
         let device = UHIDDevice::create(&params, &uhid)
             .await
             .map_err(|e| format!("{}: {e}", uhid.display()))?;
+        // The TPM and the UHID device are open: give up the gkey group
+        // before touching any file, in particular the keystore.
+        if privileged {
+            privilege::drop_group().map_err(|e| e.to_string())?;
+        }
         log::info!("authenticator ready");
         let mut server = Server::new(device, authenticator.sender());
         let mut terminate =

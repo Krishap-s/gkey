@@ -698,18 +698,16 @@ impl Handle {
 }
 
 /// Start the authenticator on its own thread.  The TPM connection is
-/// opened, and the keystore created if needed, before this returns.
+/// opened before this returns.  The keystore is only opened when
+/// requests arrive, so that a set-group-ID caller can drop its group
+/// first.
 pub fn spawn(tcti: String, keystore: PathBuf, verifier: Verifier) -> Result<Handle> {
     let (sender, receiver) = mpsc::channel::<Request>();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
     let thread = std::thread::Builder::new()
         .name("authenticator".into())
         .spawn(move || {
-            let setup = Tpm::open(&tcti).and_then(|mut tpm| {
-                Keystore::open_or_create(&keystore, &mut tpm)?;
-                Ok(tpm)
-            });
-            let tpm = match setup {
+            let tpm = match Tpm::open(&tcti) {
                 Ok(tpm) => {
                     let _ = ready_tx.send(Ok(()));
                     tpm

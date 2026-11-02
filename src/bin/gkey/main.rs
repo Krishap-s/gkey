@@ -24,7 +24,7 @@ use std::process::ExitCode;
 use gkey::getopt::{self, HasArg, Item, Opt};
 use gkey::keystore::{self, hex, Keystore};
 use gkey::tpm::{self, Tpm};
-use gkey::PACKAGE_BUGREPORT;
+use gkey::{privilege, PACKAGE_BUGREPORT};
 
 const PROGRAM: &str = "gkey";
 
@@ -188,7 +188,13 @@ fn info(tpm: &mut Tpm, dir: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-fn run(dir: PathBuf, tcti: String, command: &str, arguments: &[String]) -> Result<(), String> {
+fn run(
+    dir: PathBuf,
+    tcti: String,
+    command: &str,
+    arguments: &[String],
+    privileged: bool,
+) -> Result<(), String> {
     if !matches!(command, "list" | "delete" | "info" | "init") {
         return Err(format!("unknown command '{command}'"));
     }
@@ -196,6 +202,10 @@ fn run(dir: PathBuf, tcti: String, command: &str, arguments: &[String]) -> Resul
         return Err(format!("extra operand '{}'", arguments[0]));
     }
     let mut tpm = Tpm::open(&tcti).map_err(|e| e.to_string())?;
+    // The TPM is open: give up the gkey group before touching any file.
+    if privileged {
+        privilege::drop_group().map_err(|e| e.to_string())?;
+    }
     match command {
         "init" => {
             Keystore::create(&dir, &mut tpm).map_err(|e| e.to_string())?;
@@ -217,6 +227,13 @@ fn run(dir: PathBuf, tcti: String, command: &str, arguments: &[String]) -> Resul
 }
 
 fn main() -> ExitCode {
+    // Anyone may run this set-group-ID program with any environment, so
+    // forget the variables that could redirect it before anything reads
+    // them.
+    let privileged = privilege::is_privileged();
+    if privileged {
+        privilege::sanitize_environment();
+    }
     let items = match getopt::parse(std::env::args().skip(1), OPTIONS) {
         Ok(items) => items,
         Err(message) => return try_help(&message),
@@ -247,12 +264,25 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let tcti = tpm::tcti_from_environment(tcti.as_deref());
+    let tcti = if privileged {
+        if tcti.is_some() {
+            return try_help(&format!(
+                "option '--tcti' is not allowed when {PROGRAM} runs set-group-ID {}",
+                privilege::GKEY_GROUP
+            ));
+        }
+        if let Some(warning) = privilege::membership_warning() {
+            eprintln!("{PROGRAM}: warning: {warning}");
+        }
+        tpm::DEFAULT_TCTI.to_string()
+    } else {
+        tpm::tcti_from_environment(tcti.as_deref())
+    };
     let (command, arguments) = match operands.split_first() {
         Some((command, arguments)) => (command.as_str(), arguments),
         None => ("list", &[][..]),
     };
-    match run(dir, tcti, command, arguments) {
+    match run(dir, tcti, command, arguments, privileged) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message)
             if message.starts_with("unknown command")
