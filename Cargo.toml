@@ -30,3 +30,10 @@ name = "gkey-service"
 
 [[bin]]
 name = "gkey"
+
+# A test helper, built for the test suite and not installed.
+[[bin]]
+name = "socket-authenticator"
+path = "tests/helpers/socket-authenticator.rs"
+test = false
+doc = false

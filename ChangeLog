@@ -1,5 +1,17 @@
 2026-11-02  Krishap  <krishapbusiness@gmail.com>
 
+	Move the socket authenticator from examples/ to tests/helpers/.
+
+	* tests/helpers/socket-authenticator.rs: Moved from
+	examples/socket-authenticator.rs.  Built as a test-only binary
+	(Cargo.toml), not installed.
+	* tests/run-tests.sh: Build and run it as a binary.
+	* tests/fido2-client.py: Update the reference.
+	* Makefile.in (dist, TAGS): Include tests/helpers instead of
+	examples.
+
+2026-11-02  Krishap  <krishapbusiness@gmail.com>
+
 	Do not rebuild in make check and make install.
 
 	* Makefile.in (BINARIES, CARGO_ENV): New.

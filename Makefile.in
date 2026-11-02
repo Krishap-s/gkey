@@ -240,7 +240,9 @@ installcheck:
 dist: info
 	rm -rf $(distdir)
 	mkdir -p $(distdir)/data $(distdir)/doc $(distdir)/tests
-	cp -R $(srcdir)/src $(srcdir)/examples $(distdir)/
+	cp -R $(srcdir)/src $(distdir)/
+	mkdir -p $(distdir)/tests/helpers
+	cp $(srcdir)/tests/helpers/*.rs $(distdir)/tests/helpers/
 	cp $(srcdir)/tests/*.rs $(srcdir)/tests/*.py $(srcdir)/tests/*.sh $(distdir)/tests/
 	for f in $(DISTFILES); do \
 	  if test -f $$f; then cp $$f $(distdir)/$$f; \
@@ -250,7 +252,7 @@ dist: info
 	rm -rf $(distdir)
 
 TAGS:
-	$(ETAGS) -R -f TAGS $(srcdir)/src $(srcdir)/examples $(srcdir)/tests
+	$(ETAGS) -R -f TAGS $(srcdir)/src $(srcdir)/tests
 
 # Cleaning.
 

@@ -10,7 +10,7 @@
 
 """Register and authenticate with gkey using the python-fido2 client
 and server implementations, talking CTAPHID over the Unix socket of
-examples/socket-authenticator.rs.
+tests/helpers/socket-authenticator.rs.
 
 Usage: fido2-client.py SOCKET
 """
