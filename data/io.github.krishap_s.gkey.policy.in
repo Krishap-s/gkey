@@ -7,6 +7,10 @@
      in the dialog of the desktop's polkit agent.  auth_self asks every
      time and never remembers the authorization.
 
+     Keep each message on a single line: polkit's policy parser keeps
+     only the last line of a multi-line message.  gkey sends its own
+     multi-line messages with each request.
+
      The programs are set-user-ID @GKEY_USER@ and connect to the bus as
      that account, the owner of these actions, which lets them describe
      each request (the web site, the passkeys to delete) in the dialog
@@ -17,7 +21,7 @@
 
   <action id="io.github.krishap_s.gkey.create-passkey">
     <description>Create a passkey</description>
-    <message>A web site wants to create a passkey in gkey.  Authenticate to allow it.</message>
+    <message>A web site wants to create a passkey in gkey.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -28,7 +32,7 @@
 
   <action id="io.github.krishap_s.gkey.sign-in">
     <description>Sign in with a passkey</description>
-    <message>A web site wants you to sign in with a passkey stored in gkey.  Authenticate to allow it.</message>
+    <message>A web site wants you to sign in with a passkey stored in gkey.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -39,7 +43,7 @@
 
   <action id="io.github.krishap_s.gkey.reset">
     <description>Delete all passkeys</description>
-    <message>Authenticate to delete all your passkeys stored in gkey.  This cannot be undone.</message>
+    <message>Delete all your passkeys stored in gkey.  This cannot be undone.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -52,7 +56,7 @@
        terminal or over SSH, where pkttyagent answers. -->
   <action id="io.github.krishap_s.gkey.manage">
     <description>Manage your passkeys</description>
-    <message>Authenticate to view or change your passkeys stored in gkey.</message>
+    <message>View or change the passkeys stored in gkey.</message>
     <defaults>
       <allow_any>auth_self</allow_any>
       <allow_inactive>auth_self</allow_inactive>

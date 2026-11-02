@@ -37,8 +37,8 @@ use sha2::{Digest, Sha256};
 
 use crate::ctaphid::{Request, STATUS_PROCESSING, STATUS_UPNEEDED};
 use crate::keystore::{Credential, Keystore};
-use crate::polkit::display_text;
 use crate::prelude::*;
+use crate::prompt;
 use crate::tpm::Tpm;
 use crate::verify::{Kind, Operation, Outcome, Verifier};
 
@@ -78,10 +78,6 @@ const FLAG_UV: u8 = 0x04;
 const FLAG_AT: u8 = 0x40;
 const CREDENTIAL_ID_SIZE: usize = 16;
 const MAX_MESSAGE_SIZE: i64 = crate::ctaphid::MAX_MESSAGE_SIZE as i64;
-/// Longest relying party ID and account name shown to the user; a DNS
-/// name has at most 253 characters.
-const MAX_SHOWN_RP_ID: usize = 253;
-const MAX_SHOWN_ACCOUNT: usize = 64;
 /// How long the platform has to fetch the remaining assertions.
 const NEXT_ASSERTION_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -340,7 +336,7 @@ impl Authenticator {
                 self.consent(
                     Kind::Presence,
                     Operation::SignIn,
-                    "Use gkey as your security key?",
+                    &prompt::choose_key(),
                     ctx,
                 )?;
                 Err(CTAP2_ERR_PIN_NOT_SET)
@@ -400,24 +396,16 @@ impl Authenticator {
                 self.consent(
                     Kind::Presence,
                     Operation::Create,
-                    &format!(
-                        "You already have a passkey for {} in gkey.",
-                        display_text(&rp_id, MAX_SHOWN_RP_ID)
-                    ),
+                    &prompt::already_registered(&rp_id),
                     ctx,
                 )?;
                 return Err(CTAP2_ERR_CREDENTIAL_EXCLUDED);
             }
         }
 
-        let account = user_name
-            .as_deref()
-            .or(user_display_name.as_deref())
-            .unwrap_or("unnamed account");
-        let description = format!(
-            "Create a passkey for {}?\n\nAccount: {}",
-            display_text(&rp_id, MAX_SHOWN_RP_ID),
-            display_text(account, MAX_SHOWN_ACCOUNT)
+        let description = prompt::create(
+            &rp_id,
+            &prompt::account(user_name.as_deref().or(user_display_name.as_deref())),
         );
         let kind = if options.uv {
             Kind::Verification
@@ -519,39 +507,22 @@ impl Authenticator {
         matches.sort_by_key(|c| std::cmp::Reverse(c.created));
         let ids: VecDeque<Vec<u8>> = matches.iter().map(|c| c.id.to_vec()).collect();
         let account = match matches.as_slice() {
-            [only] => only
-                .user_name
-                .clone()
-                .or_else(|| only.user_display_name.clone())
-                .unwrap_or_else(|| "unnamed account".into()),
-            many => format!("one of {} accounts", many.len()),
+            [only] => prompt::account(
+                only.user_name
+                    .as_deref()
+                    .or(only.user_display_name.as_deref()),
+            ),
+            many => prompt::accounts(many.len()),
         };
+        let description = prompt::sign_in(&rp_id, &account);
         drop(keystore);
 
         let mut flags = 0;
         if options.uv {
-            self.consent(
-                Kind::Verification,
-                Operation::SignIn,
-                &format!(
-                    "Sign in to {}?\n\nAccount: {}",
-                    display_text(&rp_id, MAX_SHOWN_RP_ID),
-                    display_text(&account, MAX_SHOWN_ACCOUNT)
-                ),
-                ctx,
-            )?;
+            self.consent(Kind::Verification, Operation::SignIn, &description, ctx)?;
             flags |= FLAG_UP | FLAG_UV;
         } else if options.up {
-            self.consent(
-                Kind::Presence,
-                Operation::SignIn,
-                &format!(
-                    "Sign in to {}?\n\nAccount: {}",
-                    display_text(&rp_id, MAX_SHOWN_RP_ID),
-                    display_text(&account, MAX_SHOWN_ACCOUNT)
-                ),
-                ctx,
-            )?;
+            self.consent(Kind::Presence, Operation::SignIn, &description, ctx)?;
             flags |= FLAG_UP;
         }
 
@@ -681,12 +652,7 @@ impl Authenticator {
     }
 
     fn reset(&mut self, ctx: &RequestContext) -> CtapResult<Option<Value>> {
-        self.consent(
-            Kind::Verification,
-            Operation::Reset,
-            "Delete ALL passkeys stored in gkey?\n\nThis cannot be undone.",
-            ctx,
-        )?;
+        self.consent(Kind::Verification, Operation::Reset, &prompt::reset(), ctx)?;
         let mut keystore = self.open_keystore()?;
         keystore.credentials.clear();
         keystore.save(&mut self.tpm).map_err(internal)?;

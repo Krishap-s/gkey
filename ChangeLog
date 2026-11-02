@@ -1,5 +1,19 @@
 2026-11-02  Krishap  <krishapbusiness@gmail.com>
 
+	Give the authentication dialogs a consistent plain-text layout.
+
+	* src/prompt.rs: New file.  The wording of every dialog, and the
+	neutralizing of text from web sites (display_text, display_host).
+	* src/polkit.rs (display_text): Move to prompt.rs.
+	* src/ctap2.rs: Use prompt.rs; drop MAX_SHOWN_RP_ID and
+	MAX_SHOWN_ACCOUNT.
+	* src/bin/gkey/main.rs (delete_message): Use prompt.rs.
+	* data/io.github.krishap_s.gkey.policy.in: Reword the one-line
+	messages.  polkit keeps only the last line of a longer one.
+	* doc/gkey.texi, DESIGN.md, NEWS: Update.
+
+2026-11-02  Krishap  <krishapbusiness@gmail.com>
+
 	Install the programs set-user-ID gkey, the owner of the polkit
 	actions, so that the dialog can name the web site; ask polkit
 	before every command of gkey.

@@ -24,6 +24,10 @@ and connecting to polkit, so programs running as the user cannot use
 the TPM or create HID devices, while the authentication dialog names
 the web site.  Users no longer join the tss group.
 
+The authentication dialogs have a consistent plain-text layout, a
+headline then labelled lines such as "Website" and "Account", that
+reads the same in every agent.  Long host names keep their end.
+
 Every command of gkey asks for authentication through polkit, in the
 desktop's dialog or, on a terminal, through pkttyagent.
 

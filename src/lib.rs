@@ -33,6 +33,7 @@ pub mod keystore;
 pub mod polkit;
 pub mod prelude;
 pub mod privilege;
+pub mod prompt;
 pub mod tpm;
 pub mod uhid;
 pub mod verify;

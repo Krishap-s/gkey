@@ -24,7 +24,8 @@ use std::sync::atomic::AtomicBool;
 
 use gkey::getopt::{self, HasArg, Item, Opt};
 use gkey::keystore::{self, hex, Keystore};
-use gkey::polkit::{display_text, Polkit, TtyAgent, ACTION_MANAGE};
+use gkey::polkit::{Polkit, TtyAgent, ACTION_MANAGE};
+use gkey::prompt;
 use gkey::tpm::{self, Tpm};
 use gkey::{privilege, PACKAGE_BUGREPORT};
 
@@ -174,31 +175,17 @@ fn resolve(store: &Keystore, prefixes: &[String]) -> Result<Vec<usize>, String> 
 
 /// The authentication message for deleting the credentials `doomed`.
 fn delete_message(store: &Keystore, doomed: &[usize]) -> String {
-    let describe = |index: &usize| {
-        let c = &store.credentials[*index];
-        let account = c
-            .user_name
-            .as_deref()
-            .or(c.user_display_name.as_deref())
-            .unwrap_or("unnamed account");
-        format!(
-            "{} ({})",
-            display_text(&c.rp_id, 253),
-            display_text(account, 64)
-        )
-    };
-    match doomed {
-        [one] => format!("Delete your passkey for {}?", describe(one)),
-        many => {
-            let names: Vec<String> = many.iter().take(5).map(describe).collect();
-            let more = if many.len() > 5 { ", ..." } else { "" };
-            format!(
-                "Delete {} passkeys: {}{more}?",
-                many.len(),
-                names.join(", ")
+    let passkeys: Vec<(&str, Option<&str>)> = doomed
+        .iter()
+        .map(|index| {
+            let c = &store.credentials[*index];
+            (
+                c.rp_id.as_str(),
+                c.user_name.as_deref().or(c.user_display_name.as_deref()),
             )
-        }
-    }
+        })
+        .collect();
+    prompt::cli_delete(&passkeys)
 }
 
 fn delete(tpm: &mut Tpm, store: &mut Keystore, doomed: Vec<usize>) -> Result<(), String> {
@@ -268,17 +255,17 @@ fn run(
     }
     match command {
         "init" => {
-            authorize(&polkit, "Create a gkey keystore for your passkeys?")?;
+            authorize(&polkit, &prompt::cli_init())?;
             Keystore::create(&dir, &mut tpm).map_err(|e| e.to_string())?;
             println!("created keystore in {}", dir.display());
             Ok(())
         }
         "info" => {
-            authorize(&polkit, "Show information about your gkey keystore?")?;
+            authorize(&polkit, &prompt::cli_info())?;
             info(&mut tpm, &dir)
         }
         "list" => {
-            authorize(&polkit, "List the passkeys stored in gkey?")?;
+            authorize(&polkit, &prompt::cli_list())?;
             let store = Keystore::open(&dir, &mut tpm).map_err(|e| e.to_string())?;
             list(&store);
             Ok(())

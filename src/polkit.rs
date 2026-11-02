@@ -186,27 +186,6 @@ impl Polkit {
     }
 }
 
-/// Make text from a web site safe to show in an authentication dialog:
-/// some agents render markup, and control characters could disguise
-/// the request.  Keeps at most `max` characters.
-pub fn display_text(text: &str, max: usize) -> String {
-    let mut out: String = text
-        .chars()
-        .map(|c| match c {
-            '<' => '\u{2039}',
-            '>' => '\u{203a}',
-            '&' => '+',
-            c if c.is_control() => ' ',
-            c => c,
-        })
-        .take(max)
-        .collect();
-    if text.chars().count() > max {
-        out.push('\u{2026}');
-    }
-    out
-}
-
 /// polkit's text mode authentication agent, for programs run from a
 /// terminal.  It only answers when no graphical agent serves the
 /// user's session, and stops when dropped.
@@ -281,17 +260,7 @@ impl Drop for TtyAgent {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_text, parse_start_time};
-
-    #[test]
-    fn sanitizes_display_text() {
-        assert_eq!(display_text("example.org", 64), "example.org");
-        assert_eq!(
-            display_text("<b>evil</b>&\u{1b}[31m", 64),
-            "\u{2039}b\u{203a}evil\u{2039}/b\u{203a}+ [31m"
-        );
-        assert_eq!(display_text("abcdef", 3), "abc\u{2026}");
-    }
+    use super::parse_start_time;
 
     #[test]
     fn parses_start_time() {

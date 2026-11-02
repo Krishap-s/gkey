@@ -372,10 +372,29 @@ for user presence too.  The installed policy asks every time and never
 remembers an authorization; administrators can change that with
 polkit rules files.
 
+@cindex dialog layout
+The agent of the desktop draws the dialog; gkey only supplies the
+message.  Agents differ in how they treat it (some show markup
+literally, some render it, none shows an icon or fields of gkey's
+choosing reliably), so every message is plain text of a few short
+lines that reads the same everywhere:
+
+@example
+Sign in with a passkey
+Website: example.org
+Account: alice
+@end example
+
+The first line says what is about to happen, the following ones say to
+whom.  A message has at most six lines of sixty characters.  Site and
+account names come from the web page, so markup and control characters
+in them are replaced by harmless look-alikes, and a long host name is
+cut at its start, keeping the end, which identifies the site.
+
 polkit only accepts such a description from the owner of the action,
 the @samp{gkey} account; when @command{gkey-service} does not run
-set-user-ID, as in development, the dialog shows the fixed message of
-the action instead.
+set-user-ID, as in development, the dialog shows the fixed one-line
+message of the action instead.
 
 With the @samp{command} method, the command given with
 @option{--verify-command} is run by @file{/bin/sh}, with

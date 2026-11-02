@@ -83,7 +83,9 @@ session, whose authentication agent asks for the password and checks
 it through PAM, so fingerprint readers and other PAM modules work and
 the service never sees the password.  polkit has no confirmation
 without authentication, so presence and verification both require it,
-and only the actions' owner may pass details: running set-user-ID
+and only the actions' owner may pass details (messages are plain
+text of a few short lines, see `src/prompt.rs`, because agents treat
+markup differently and policy files can only hold one-line messages): running set-user-ID
 `gkey`, the programs describe each request, including the web site,
 in the dialog.  The `gkey` program asks for the `manage` action before
 every command, and starts `pkttyagent` on a terminal.  Alternatively
