@@ -39,7 +39,7 @@ use crate::ctaphid::{Request, STATUS_PROCESSING, STATUS_UPNEEDED};
 use crate::keystore::{Credential, Keystore};
 use crate::prelude::*;
 use crate::tpm::Tpm;
-use crate::verify::{Kind, Outcome, Verifier};
+use crate::verify::{Kind, Operation, Outcome, Verifier};
 
 pub const CMD_MAKE_CREDENTIAL: u8 = 0x01;
 pub const CMD_GET_ASSERTION: u8 = 0x02;
@@ -301,9 +301,15 @@ impl Authenticator {
         }
     }
 
-    fn consent(&self, kind: Kind, description: &str, ctx: &RequestContext) -> CtapResult<()> {
+    fn consent(
+        &self,
+        kind: Kind,
+        operation: Operation,
+        description: &str,
+        ctx: &RequestContext,
+    ) -> CtapResult<()> {
         ctx.status.store(STATUS_UPNEEDED, Ordering::Relaxed);
-        let outcome = self.verifier.ask(kind, description, ctx.cancel);
+        let outcome = self.verifier.ask(kind, operation, description, ctx.cancel);
         ctx.status.store(STATUS_PROCESSING, Ordering::Relaxed);
         match outcome {
             Ok(Outcome::Granted) => Ok(()),
@@ -326,7 +332,12 @@ impl Authenticator {
         match value {
             None => Ok(()),
             Some(value) if as_bytes(value)?.is_empty() => {
-                self.consent(Kind::Presence, "Use gkey as your security key?", ctx)?;
+                self.consent(
+                    Kind::Presence,
+                    Operation::SignIn,
+                    "Use gkey as your security key?",
+                    ctx,
+                )?;
                 Err(CTAP2_ERR_PIN_NOT_SET)
             }
             Some(_) => Err(CTAP2_ERR_PIN_AUTH_INVALID),
@@ -383,6 +394,7 @@ impl Authenticator {
             if excluded {
                 self.consent(
                     Kind::Presence,
+                    Operation::Create,
                     &format!("You already have a passkey for {rp_id} in gkey."),
                     ctx,
                 )?;
@@ -400,7 +412,7 @@ impl Authenticator {
         } else {
             Kind::Presence
         };
-        self.consent(kind, &description, ctx)?;
+        self.consent(kind, Operation::Create, &description, ctx)?;
 
         let key = self.tpm.create_signing_key().map_err(internal)?;
         let id = self.tpm.random(CREDENTIAL_ID_SIZE).map_err(internal)?;
@@ -508,6 +520,7 @@ impl Authenticator {
         if options.uv {
             self.consent(
                 Kind::Verification,
+                Operation::SignIn,
                 &format!("Sign in to {rp_id}?\n\nAccount: {account}"),
                 ctx,
             )?;
@@ -515,6 +528,7 @@ impl Authenticator {
         } else if options.up {
             self.consent(
                 Kind::Presence,
+                Operation::SignIn,
                 &format!("Sign in to {rp_id}?\n\nAccount: {account}"),
                 ctx,
             )?;
@@ -649,6 +663,7 @@ impl Authenticator {
     fn reset(&mut self, ctx: &RequestContext) -> CtapResult<Option<Value>> {
         self.consent(
             Kind::Verification,
+            Operation::Reset,
             "Delete ALL passkeys stored in gkey?\n\nThis cannot be undone.",
             ctx,
         )?;

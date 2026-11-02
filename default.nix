@@ -24,7 +24,6 @@ stdenv.mkDerivation {
 
   buildInputs = with pkgs; [
     tpm2-tss
-    linux-pam
   ];
 
 

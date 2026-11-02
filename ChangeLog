@@ -1,3 +1,22 @@
+2026-11-02  Krishap  <krishapbusiness@gmail.com>
+
+	Ask polkit for consent instead of pinentry and PAM.
+
+	* src/polkit.rs: New file.  polkit client checking authorizations
+	for the service's own process.
+	* src/verify.rs (Operation): New.
+	(Method::Polkit): New, the default.
+	(Method::Pam): Remove, with the PAM and pinentry code.
+	* src/ctap2.rs (Authenticator::consent): Pass the operation.
+	* src/bin/gkey-service/main.rs: Use a multi-threaded runtime.
+	Remove the --pam-service and --pinentry options.
+	* data/io.github.krishap_s.gkey.policy: New file.
+	* data/gkey.pam: Remove.
+	* configure.ac, Makefile.in: Install the polkit actions; drop PAM.
+	* Cargo.toml: Depend on zbus.
+	* default.nix: Drop linux-pam.
+	* doc/gkey.texi, README.md, INSTALL, DESIGN.md, NEWS: Update.
+
 2026-10-28  Krishap  <krishapbusiness@gmail.com>
 
 	Support Rust 1.80, so that Cargo versions without edition 2024

@@ -12,13 +12,13 @@ and never leave it.
 
 Each credential is an ECC P-256 key created by the TPM under a storage
 primary key derived from the TPM's owner seed.  The credential list is
-encrypted with AES-256-GCM under a key sealed to the TPM.  The user is
-asked for consent with GnuPG's pinentry and verified through PAM.
+encrypted with AES-256-GCM under a key sealed to the TPM.  The user
+authenticates for every operation in the desktop's polkit dialog.
 
 ## Building
 
 You need Rust (cargo and rustc), a C compiler, pkg-config, the TPM2
-Software Stack (`tpm2-tss`) and Linux-PAM development files.  Then:
+Software Stack (`tpm2-tss`) development files.  Then:
 
 ```sh
 autoconf

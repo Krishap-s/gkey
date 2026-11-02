@@ -90,7 +90,7 @@ inspect the TPM and the keystore.
 gkey supports discoverable credentials (``passkeys'' proper, that let
 you sign in without typing a user name) as well as server-side
 credentials, the ES256 signature algorithm, and built-in user
-verification through PAM.
+verification through polkit.
 
 @node Security model
 @chapter Security model
@@ -125,9 +125,10 @@ with parameter encryption, so that the sealed key does not cross the
 bus between the processor and the TPM in the clear.
 
 @item
-Before a passkey is created or used, gkey asks for the consent of the
-user, and verifies their identity through PAM when the relying party
-asks for user verification (@pxref{User consent}).
+Before a passkey is created or used, gkey asks polkit, whose
+authentication agent in the user's desktop session asks for the
+user's password (@pxref{User consent}).  gkey never sees the
+password.
 @end itemize
 
 gkey cannot protect against software running with the privileges of
@@ -166,11 +167,9 @@ Membership of this group lets the user's programs create any kind of
 HID device, keyboards included.
 
 @item
-The PAM service @samp{gkey}, installed as @file{/etc/pam.d/gkey}, used
-to verify the user.
-
-@item
-A pinentry program, as distributed with GnuPG, to talk to the user.
+polkit, with the actions installed by gkey, and a polkit
+authentication agent in the user's desktop session, as GNOME, KDE
+Plasma and most other desktops provide.
 @end itemize
 
 Log out and back in for the group changes to take effect, then enable
@@ -212,19 +211,12 @@ Without this option the environment variables @env{GKEY_TCTI},
 Create the device through @var{file} instead of @file{/dev/uhid}.
 
 @item --verify=@var{method}
-Obtain user consent with @var{method}, @samp{pam} (the default) or
+Obtain user consent with @var{method}, @samp{polkit} (the default) or
 @samp{command}.  @xref{User consent}.
 
 @item --verify-command=@var{command}
 Run @var{command} to obtain user consent.  Implies
 @option{--verify=command}.
-
-@item --pam-service=@var{name}
-Verify the user with the PAM service @var{name}, by default
-@samp{gkey}.
-
-@item --pinentry=@var{program}
-Talk to the user with @var{program}, by default @samp{pinentry}.
 
 @item -v
 @itemx --verbose
@@ -289,30 +281,48 @@ leave the TPM.
 @chapter User consent
 @cindex user presence
 @cindex user verification
+@cindex polkit
 @cindex PAM
-@cindex pinentry
 
 FIDO distinguishes @dfn{user presence}, the user's consent to an
 operation, from @dfn{user verification}, which also establishes who
 the user is.  Relying parties ask for one or the other; gkey always
 obtains at least the former.
 
-With the default @samp{pam} method, presence is a confirmation dialog
-shown by pinentry, and verification runs the PAM service @samp{gkey}
-for the user running the service.  Its prompts, typically for the
-login password, are shown by pinentry too, so any PAM module that
-works with a conversation can be used.  pinentry needs the
-@env{DISPLAY} or @env{WAYLAND_DISPLAY} variable of the graphical
-session; desktop environments normally make them available to user
-services.
+With the default @samp{polkit} method, @command{gkey-service} asks
+polkit to authorize one of these actions for its own process:
+
+@table @samp
+@item io.github.krishap_s.gkey.create-passkey
+Creating a passkey.
+@item io.github.krishap_s.gkey.sign-in
+Signing in with a passkey.
+@item io.github.krishap_s.gkey.reset
+Deleting all passkeys, when the browser resets the security key.
+@end table
+
+polkit attributes the service, which runs outside of any login
+session, to the user's graphical session, whose authentication agent
+shows a dialog with the message of the action and asks for the user's
+password.  polkit checks it through PAM, so any PAM module configured
+for polkit, such as a fingerprint reader, can be used.  polkit offers
+no confirmation that does not authenticate, so the user authenticates
+for user presence too.  The installed policy asks every time and never
+remembers an authorization; administrators can change that with
+polkit rules files.
+
+polkit does not let an ordinary user's program pass details for the
+dialog to show, so the dialog names the operation but not the web
+site; the browser shows which site is asking.
 
 With the @samp{command} method, the command given with
 @option{--verify-command} is run by @file{/bin/sh}, with
-@env{GKEY_REQUEST} set to @samp{presence} or @samp{verification} and
-@env{GKEY_DESCRIPTION} set to a description of the request.  Exit
+@env{GKEY_REQUEST} set to @samp{presence} or @samp{verification},
+@env{GKEY_OPERATION} to @samp{create}, @samp{sign-in} or @samp{reset},
+and @env{GKEY_DESCRIPTION} set to a description of the request.  Exit
 status zero grants the request.
 
-The prompt is withdrawn when the browser cancels the request.
+The request is withdrawn when the browser cancels it.
 
 @node Files
 @chapter Files
@@ -328,8 +338,8 @@ option select another directory.
 @item $XDG_DATA_HOME/gkey/keystore.lock
 Lock file used to serialize access to the keystore.
 
-@item /etc/pam.d/gkey
-PAM configuration used for user verification.
+@item /usr/share/polkit-1/actions/io.github.krishap_s.gkey.policy
+The polkit actions.
 
 @item /usr/lib/udev/rules.d/70-gkey.rules
 Grants the @samp{gkey} group access to @file{/dev/uhid}.

@@ -24,6 +24,7 @@ use std::process::ExitCode;
 
 use gkey::ctaphid::Server;
 use gkey::getopt::{self, HasArg, Item, Opt};
+use gkey::polkit::Polkit;
 use gkey::uhid::{CreateParams, UHIDDevice, BUS_USB, UHID_PATH};
 use gkey::verify::{Method, Verifier};
 use gkey::{ctap2, keystore, tpm, PACKAGE_BUGREPORT};
@@ -78,16 +79,6 @@ const OPTIONS: &[Opt] = &[
         has_arg: HasArg::Required,
     },
     Opt {
-        long: "pam-service",
-        short: None,
-        has_arg: HasArg::Required,
-    },
-    Opt {
-        long: "pinentry",
-        short: None,
-        has_arg: HasArg::Required,
-    },
-    Opt {
         long: "verbose",
         short: Some('v'),
         has_arg: HasArg::No,
@@ -124,14 +115,10 @@ answers the requests that web browsers and other FIDO clients send to it.
                               (default: $GKEY_TCTI or {tcti})
       --uhid=FILE           create the device through FILE
                               (default: {UHID_PATH})
-      --verify=METHOD       ask for user consent with METHOD: 'pam' (the
+      --verify=METHOD       ask for user consent with METHOD: 'polkit' (the
                               default) or 'command'
       --verify-command=CMD  run CMD to ask for consent; implies
                               --verify=command
-      --pam-service=NAME    verify the user with PAM service NAME
-                              (default: gkey)
-      --pinentry=PROGRAM    use PROGRAM to talk to the user
-                              (default: pinentry)
   -v, --verbose             print more messages; repeat for even more
   -q, --quiet               print only error messages
       --help                display this help and exit
@@ -178,10 +165,8 @@ fn main() -> ExitCode {
     let mut keystore_dir: Option<PathBuf> = None;
     let mut tcti: Option<String> = None;
     let mut uhid = PathBuf::from(UHID_PATH);
-    let mut method = String::from("pam");
+    let mut method = String::from("polkit");
     let mut command: Option<String> = None;
-    let mut pam_service = String::from("gkey");
-    let mut pinentry = String::from("pinentry");
     let mut verbosity = 0;
     for item in items {
         match item {
@@ -193,8 +178,6 @@ fn main() -> ExitCode {
                 method = "command".into();
                 command = Some(value);
             }
-            Item::Opt("pam-service", Some(value)) => pam_service = value,
-            Item::Opt("pinentry", Some(value)) => pinentry = value,
             Item::Opt("verbose", None) => verbosity += 1,
             Item::Opt("quiet", None) => verbosity = -1,
             Item::Opt("help", None) => {
@@ -211,12 +194,9 @@ fn main() -> ExitCode {
     }
     init_logging(verbosity);
 
-    let method = match (method.as_str(), command) {
-        ("pam", _) => Method::Pam {
-            service: pam_service,
-            pinentry,
-        },
-        ("command", Some(command)) => Method::Command(command),
+    let command = match (method.as_str(), command) {
+        ("polkit", _) => None,
+        ("command", Some(command)) => Some(command),
         ("command", None) => return try_help("--verify=command requires --verify-command"),
         (other, _) => return try_help(&format!("invalid verification method '{other}'")),
     };
@@ -229,15 +209,10 @@ fn main() -> ExitCode {
     };
     let tcti = tpm::tcti_from_environment(tcti.as_deref());
 
-    let authenticator = match ctap2::spawn(tcti, keystore_dir, Verifier { method }) {
-        Ok(authenticator) => authenticator,
-        Err(err) => {
-            log::error!("{err}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let runtime = match tokio::runtime::Builder::new_current_thread()
+    // The authenticator thread waits for polkit's answers while the
+    // event loop runs, which needs a multi-threaded runtime.
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
     {
@@ -247,7 +222,31 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let result = runtime.block_on(async {
+    match runtime.block_on(serve(tcti, keystore_dir, uhid, command)) {
+        Ok(()) => {
+            log::info!("exiting");
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            log::error!("{message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn serve(
+    tcti: String,
+    keystore_dir: PathBuf,
+    uhid: PathBuf,
+    command: Option<String>,
+) -> Result<(), String> {
+    let method = match command {
+        Some(command) => Method::Command(command),
+        None => Method::Polkit(Polkit::connect().await.map_err(|e| e.to_string())?),
+    };
+    let authenticator =
+        ctap2::spawn(tcti, keystore_dir, Verifier { method }).map_err(|e| e.to_string())?;
+    let result = async {
         let params = CreateParams {
             name: "gkey TPM authenticator".into(),
             phys: String::new(),
@@ -272,16 +271,10 @@ fn main() -> ExitCode {
             _ = tokio::signal::ctrl_c() => Ok(()),
             _ = terminate.recv() => Ok(()),
         }
-    });
-    authenticator.shutdown();
-    match result {
-        Ok(()) => {
-            log::info!("exiting");
-            ExitCode::SUCCESS
-        }
-        Err(message) => {
-            log::error!("{message}");
-            ExitCode::FAILURE
-        }
     }
+    .await;
+    // Withdrawing a pending polkit request needs the event loop, so
+    // wait for the authenticator from a blocking task.
+    let _ = tokio::task::spawn_blocking(move || authenticator.shutdown()).await;
+    result
 }

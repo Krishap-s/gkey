@@ -20,6 +20,7 @@ thiserror = "2.0.8"
 tokio = { version = "1.41.0", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tss-esapi = "7.6"
 zeroize = "1"
+zbus = { version = "4", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 p256 = { version = "0.13", features = ["ecdsa"] }

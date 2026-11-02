@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- polkit actions of gkey.  gkey-service, running as the user, asks
+     for these before every operation; the user authenticates in the
+     dialog of the desktop's polkit agent.  auth_self asks every time
+     and never remembers the authorization. -->
+<policyconfig>
+  <vendor>gkey</vendor>
+  <vendor_url>https://github.com/Krishap-s/gkey</vendor_url>
+
+  <action id="io.github.krishap_s.gkey.create-passkey">
+    <description>Create a passkey</description>
+    <message>A web site wants to create a passkey in gkey.  Authenticate to allow it.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.krishap_s.gkey.sign-in">
+    <description>Sign in with a passkey</description>
+    <message>A web site wants you to sign in with a passkey stored in gkey.  Authenticate to allow it.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.krishap_s.gkey.reset">
+    <description>Delete all passkeys</description>
+    <message>Authenticate to delete all your passkeys stored in gkey.  This cannot be undone.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

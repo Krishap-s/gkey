@@ -45,11 +45,15 @@ not, is kept in the keystore, so credentials can be listed and deleted.
 
 ## User consent
 
-User presence is a pinentry confirmation dialog.  User verification
-runs PAM (service `gkey`) for the user running the service, relaying
-PAM prompts through pinentry, so that passwords, fingerprint readers
-and other PAM modules can be used.  Alternatively an external command
-decides.
+The service asks polkit to authorize one of three actions (create a
+passkey, sign in, delete all passkeys) for its own process.  polkit
+attributes a process of a user service to the user's graphical
+session, whose authentication agent asks for the password and checks
+it through PAM, so fingerprint readers and other PAM modules work and
+the service never sees the password.  polkit has no confirmation
+without authentication, so presence and verification both require it,
+and it does not let unprivileged callers pass details, so the dialog
+cannot name the web site.  Alternatively an external command decides.
 
 ## Future work
 

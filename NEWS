@@ -14,8 +14,8 @@ Credential private keys are ECC P-256 keys generated inside the TPM
 and bound to it.  The credential list is encrypted with a key sealed
 to the TPM.  TPM commands use a salted, encrypted session.
 
-The user is asked for consent with pinentry and verified with PAM, or
-with an external command given with --verify-command.
+The user authenticates in the desktop's polkit dialog before every
+operation, or an external command given with --verify-command decides.
 
 New program gkey lists, inspects and deletes credentials.
 

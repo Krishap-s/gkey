@@ -37,7 +37,7 @@ psdir = @psdir@
 systemduserunitdir = @systemduserunitdir@
 udevrulesdir = @udevrulesdir@
 modulesloaddir = @modulesloaddir@
-pamdir = @pamdir@
+polkitactiondir = @polkitactiondir@
 
 CARGO = @CARGO@
 CARGOFLAGS =
@@ -60,7 +60,8 @@ CARGO_BUILD = $(CARGO) build --release --manifest-path $(srcdir)/Cargo.toml \
 DISTFILES = AUTHORS COPYING ChangeLog DESIGN.md INSTALL NEWS README.md \
 	Cargo.toml Cargo.lock Makefile.in configure configure.ac \
 	default.nix flake.nix flake.lock \
-	data/70-gkey.rules data/gkey.pam data/gkey-modules.conf data/gkey.service.in \
+	data/70-gkey.rules data/gkey-modules.conf data/gkey.service.in \
+	data/io.github.krishap_s.gkey.policy \
 	doc/gkey.texi doc/gkey.info doc/version.texi
 
 .PHONY: all build install install-strip installdirs uninstall clean mostlyclean \
@@ -78,7 +79,8 @@ gkey.service: $(srcdir)/data/gkey.service.in Makefile
 
 installdirs:
 	mkdir -p $(DESTDIR)$(bindir) $(DESTDIR)$(systemduserunitdir) \
-	  $(DESTDIR)$(udevrulesdir) $(DESTDIR)$(modulesloaddir) $(DESTDIR)$(pamdir)
+	  $(DESTDIR)$(udevrulesdir) $(DESTDIR)$(modulesloaddir) \
+	  $(DESTDIR)$(polkitactiondir)
 
 install: all installdirs
 	for p in $(PROGRAMS); do \
@@ -87,7 +89,8 @@ install: all installdirs
 	$(INSTALL_DATA) gkey.service $(DESTDIR)$(systemduserunitdir)/gkey.service
 	$(INSTALL_DATA) $(srcdir)/data/70-gkey.rules $(DESTDIR)$(udevrulesdir)/70-gkey.rules
 	$(INSTALL_DATA) $(srcdir)/data/gkey-modules.conf $(DESTDIR)$(modulesloaddir)/gkey.conf
-	$(INSTALL_DATA) $(srcdir)/data/gkey.pam $(DESTDIR)$(pamdir)/gkey
+	$(INSTALL_DATA) $(srcdir)/data/io.github.krishap_s.gkey.policy \
+	  $(DESTDIR)$(polkitactiondir)/io.github.krishap_s.gkey.policy
 	@if test -f doc/gkey.info || test -f $(srcdir)/doc/gkey.info; then \
 	  $(MAKE) install-info; \
 	fi
@@ -100,7 +103,7 @@ uninstall:
 	rm -f $(DESTDIR)$(systemduserunitdir)/gkey.service
 	rm -f $(DESTDIR)$(udevrulesdir)/70-gkey.rules
 	rm -f $(DESTDIR)$(modulesloaddir)/gkey.conf
-	rm -f $(DESTDIR)$(pamdir)/gkey
+	rm -f $(DESTDIR)$(polkitactiondir)/io.github.krishap_s.gkey.policy
 	-$(INSTALL_INFO) --delete --info-dir=$(DESTDIR)$(infodir) \
 	  $(DESTDIR)$(infodir)/gkey.info 2>/dev/null
 	rm -f $(DESTDIR)$(infodir)/gkey.info
