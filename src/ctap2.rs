@@ -92,6 +92,89 @@ const NEXT_ASSERTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 type CtapResult<T> = std::result::Result<T, u8>;
 
+/// The name of a CTAP2 command, for logs.
+pub fn command_name(command: u8) -> &'static str {
+    match command {
+        CMD_MAKE_CREDENTIAL => "makeCredential",
+        CMD_GET_ASSERTION => "getAssertion",
+        CMD_GET_INFO => "getInfo",
+        CMD_CLIENT_PIN => "clientPIN",
+        CMD_RESET => "reset",
+        CMD_GET_NEXT_ASSERTION => "getNextAssertion",
+        _ => "unknown command",
+    }
+}
+
+/// The name of a CTAP status, for logs.
+pub fn status_name(status: u8) -> &'static str {
+    match status {
+        CTAP2_OK => "success",
+        CTAP1_ERR_INVALID_COMMAND => "invalid command",
+        CTAP1_ERR_INVALID_PARAMETER => "invalid parameter",
+        CTAP2_ERR_CBOR_UNEXPECTED_TYPE => "unexpected CBOR type",
+        CTAP2_ERR_INVALID_CBOR => "invalid CBOR",
+        CTAP2_ERR_MISSING_PARAMETER => "missing parameter",
+        CTAP2_ERR_CREDENTIAL_EXCLUDED => "credential excluded",
+        CTAP2_ERR_UNSUPPORTED_ALGORITHM => "unsupported algorithm",
+        CTAP2_ERR_OPERATION_DENIED => "operation denied",
+        CTAP2_ERR_INVALID_OPTION => "invalid option",
+        CTAP2_ERR_KEEPALIVE_CANCEL => "cancelled",
+        CTAP2_ERR_NO_CREDENTIALS => "no credentials",
+        CTAP2_ERR_NOT_ALLOWED => "not allowed",
+        CTAP2_ERR_PIN_AUTH_INVALID => "PIN authentication invalid",
+        CTAP2_ERR_PIN_NOT_SET => "PIN not set",
+        CTAP2_ERR_OTHER => "internal error",
+        _ => "other error",
+    }
+}
+
+/// How noteworthy a refused request is: routine ones (a client looking
+/// for a credential that is not here, the platform asking the user to
+/// pick a security key) only show when debugging, the user's own
+/// decisions are informational, and everything that points at a
+/// problem with the client or with gkey is a warning.
+fn status_level(status: u8) -> log::Level {
+    match status {
+        CTAP2_ERR_NO_CREDENTIALS | CTAP2_ERR_PIN_NOT_SET => log::Level::Debug,
+        CTAP2_ERR_OPERATION_DENIED
+        | CTAP2_ERR_KEEPALIVE_CANCEL
+        | CTAP2_ERR_CREDENTIAL_EXCLUDED
+        | CTAP2_ERR_NOT_ALLOWED => log::Level::Info,
+        _ => log::Level::Warn,
+    }
+}
+
+/// The name of a COSE algorithm, for logs.
+fn algorithm_name(alg: i128) -> String {
+    match alg {
+        -7 => "ES256".into(),
+        -8 => "EdDSA".into(),
+        -35 => "ES384".into(),
+        -36 => "ES512".into(),
+        -37 => "PS256".into(),
+        -257 => "RS256".into(),
+        other => other.to_string(),
+    }
+}
+
+/// A relying party ID made safe to put in a log line: it comes from a
+/// web page, and control characters could fake further lines.  It is
+/// quoted because it may itself end in punctuation ("ssh:").
+fn shown(rp_id: &str) -> String {
+    format!("'{}'", prompt::display_host(rp_id, 64))
+}
+
+/// What the user is asked to allow, as a phrase for logs.
+fn describe(operation: Operation, rp_id: Option<&str>) -> String {
+    match (operation, rp_id) {
+        (Operation::Create, Some(rp)) => format!("create a passkey for {}", shown(rp)),
+        (Operation::Create, None) => "create a passkey".into(),
+        (Operation::SignIn, Some(rp)) => format!("sign in to {}", shown(rp)),
+        (Operation::SignIn, None) => "use gkey as the security key".into(),
+        (Operation::Reset, _) => "delete all passkeys".into(),
+    }
+}
+
 /// Log an internal error and turn it into a CTAP status.
 fn internal(err: Error) -> u8 {
     log::error!("{err}");
@@ -233,7 +316,13 @@ fn cred_protect(extensions: Option<&Value>) -> CtapResult<Option<u8>> {
             Ok(
                 level @ (CRED_PROTECT_OPTIONAL | CRED_PROTECT_WITH_LIST | CRED_PROTECT_REQUIRED),
             ) => Ok(Some(level)),
-            _ => Err(CTAP2_ERR_INVALID_OPTION),
+            _ => {
+                log::warn!(
+                    "makeCredential: the credProtect level {} is not 1, 2 or 3",
+                    i128::from(*level)
+                );
+                Err(CTAP2_ERR_INVALID_OPTION)
+            }
         },
         Some(_) => Err(CTAP2_ERR_CBOR_UNEXPECTED_TYPE),
     }
@@ -303,7 +392,7 @@ impl Authenticator {
         let Some((&command, parameters)) = request.split_first() else {
             return vec![CTAP1_ERR_INVALID_COMMAND];
         };
-        log::debug!("CTAP2 command {command:#04x}");
+        log::debug!("{} request", command_name(command));
         if command != CMD_GET_NEXT_ASSERTION {
             self.pending = None;
         }
@@ -335,28 +424,51 @@ impl Authenticator {
             }
             Ok(None) => vec![CTAP2_OK],
             Err(status) => {
-                log::debug!("CTAP2 command {command:#04x} failed with {status:#04x}");
+                log::log!(
+                    status_level(status),
+                    "{} refused: {} ({status:#04x})",
+                    command_name(command),
+                    status_name(status)
+                );
                 vec![status]
             }
         }
     }
 
+    /// Ask the user to allow `operation` on `rp_id` (when it concerns
+    /// a site).
     fn consent(
         &self,
         kind: Kind,
         operation: Operation,
+        rp_id: Option<&str>,
         description: &str,
         ctx: &RequestContext,
     ) -> CtapResult<()> {
+        let what = describe(operation, rp_id);
+        let asked = match kind {
+            Kind::Presence => "user presence",
+            Kind::Verification => "user verification",
+        };
+        log::info!("asking for {asked} to {what}");
         ctx.status.store(STATUS_UPNEEDED, Ordering::Relaxed);
         let outcome = self.verifier.ask(kind, operation, description, ctx.cancel);
         ctx.status.store(STATUS_PROCESSING, Ordering::Relaxed);
         match outcome {
-            Ok(Outcome::Granted) => Ok(()),
-            Ok(Outcome::Denied) => Err(CTAP2_ERR_OPERATION_DENIED),
-            Ok(Outcome::Cancelled) => Err(CTAP2_ERR_KEEPALIVE_CANCEL),
+            Ok(Outcome::Granted) => {
+                log::info!("the user allowed it to {what}");
+                Ok(())
+            }
+            Ok(Outcome::Denied) => {
+                log::info!("the user did not allow it to {what}");
+                Err(CTAP2_ERR_OPERATION_DENIED)
+            }
+            Ok(Outcome::Cancelled) => {
+                log::info!("the request to {what} was cancelled");
+                Err(CTAP2_ERR_KEEPALIVE_CANCEL)
+            }
             Err(err) => {
-                log::error!("cannot obtain user consent: {err}");
+                log::error!("cannot obtain user consent to {what}: {err}");
                 Err(CTAP2_ERR_OPERATION_DENIED)
             }
         }
@@ -375,6 +487,7 @@ impl Authenticator {
                 self.consent(
                     Kind::Presence,
                     Operation::SignIn,
+                    None,
                     &prompt::choose_key(),
                     ctx,
                 )?;
@@ -404,7 +517,14 @@ impl Authenticator {
         let user_name = optional_text(user, "name")?;
         let user_display_name = optional_text(user, "displayName")?;
 
+        log::debug!(
+            "makeCredential for {}: resident key {}, user verification {}",
+            shown(&rp_id),
+            options.rk,
+            options.uv
+        );
         let mut supported = false;
+        let mut offered = Vec::new();
         for algorithm in algorithms {
             let algorithm = as_map(algorithm)?;
             let kind = as_text(get_text(algorithm, "type").ok_or(CTAP2_ERR_MISSING_PARAMETER)?)?;
@@ -412,14 +532,26 @@ impl Authenticator {
                 Value::Integer(i) => i128::from(*i),
                 _ => return Err(CTAP2_ERR_CBOR_UNEXPECTED_TYPE),
             };
+            offered.push(algorithm_name(alg));
             if kind == "public-key" && alg == COSE_ES256 as i128 {
                 supported = true;
             }
         }
         if !supported {
+            log::warn!(
+                "makeCredential for {} refused: the client offers only {}, and gkey supports \
+                 only ES256 (ECDSA P-256), since TPMs have no Ed25519; for OpenSSH use \
+                 'ssh-keygen -t ecdsa-sk'",
+                shown(&rp_id),
+                offered.join(", ")
+            );
             return Err(CTAP2_ERR_UNSUPPORTED_ALGORITHM);
         }
         if !options.up {
+            log::warn!(
+                "makeCredential for {} refused: the client sent up=false",
+                shown(&rp_id)
+            );
             return Err(CTAP2_ERR_INVALID_OPTION);
         }
 
@@ -433,9 +565,14 @@ impl Authenticator {
             });
             drop(keystore);
             if excluded {
+                log::info!(
+                    "makeCredential for {}: a credential on the exclude list already exists",
+                    shown(&rp_id)
+                );
                 self.consent(
                     Kind::Presence,
                     Operation::Create,
+                    Some(&rp_id),
                     &prompt::already_registered(&rp_id),
                     ctx,
                 )?;
@@ -452,7 +589,7 @@ impl Authenticator {
         } else {
             Kind::Presence
         };
-        self.consent(kind, Operation::Create, &description, ctx)?;
+        self.consent(kind, Operation::Create, Some(&rp_id), &description, ctx)?;
 
         let key = self.tpm.create_signing_key().map_err(internal)?;
         let id = self.tpm.random(CREDENTIAL_ID_SIZE).map_err(internal)?;
@@ -524,8 +661,23 @@ impl Authenticator {
         keystore.credentials.push(credential);
         keystore.save(&mut self.tpm).map_err(internal)?;
         log::info!(
-            "created credential {} for {rp_id}",
-            crate::keystore::hex(&id)
+            "created credential {} for {} ({}{}{})",
+            crate::keystore::hex(&id),
+            shown(&rp_id),
+            if options.rk {
+                "resident key"
+            } else {
+                "key handle"
+            },
+            if options.uv {
+                ", user verification"
+            } else {
+                ""
+            },
+            match cred_protect {
+                Some(level) => format!(", credProtect {level}"),
+                None => String::new(),
+            }
         );
 
         Ok(Some(Value::Map(vec![
@@ -556,6 +708,13 @@ impl Authenticator {
             return Err(CTAP2_ERR_INVALID_OPTION);
         }
 
+        log::debug!(
+            "getAssertion for {}: presence {}, verification {}, {} credential(s) listed",
+            shown(&rp_id),
+            options.up,
+            options.uv,
+            allow.as_ref().map_or(0, Vec::len)
+        );
         let keystore = self.open_keystore()?;
         let allow = allow.filter(|ids| !ids.is_empty());
         let mut matches: Vec<&Credential> = match &allow {
@@ -573,9 +732,31 @@ impl Authenticator {
                 .collect(),
         };
         if matches.is_empty() {
+            // Not an error worth a warning: clients look for
+            // credentials that may not be here.
+            let hidden = keystore
+                .credentials
+                .iter()
+                .filter(|c| c.rp_id == rp_id)
+                .filter(|c| match &allow {
+                    Some(ids) => ids.iter().any(|id| id.as_slice() == c.id.as_slice()),
+                    None => c.discoverable,
+                })
+                .filter(|c| !visible(c, options.uv, allow.is_some()))
+                .count();
+            log::debug!(
+                "getAssertion for {}: no credential to offer{}",
+                shown(&rp_id),
+                if hidden > 0 {
+                    format!(" ({hidden} hidden by credProtect without user verification)")
+                } else {
+                    String::new()
+                }
+            );
             return Err(CTAP2_ERR_NO_CREDENTIALS);
         }
         matches.sort_by_key(|c| std::cmp::Reverse(c.created));
+        let pending_rp = rp_id.clone();
         let ids: VecDeque<Vec<u8>> = matches.iter().map(|c| c.id.to_vec()).collect();
         let account = match matches.as_slice() {
             [only] => prompt::account(
@@ -590,11 +771,31 @@ impl Authenticator {
 
         let mut flags = 0;
         if options.uv {
-            self.consent(Kind::Verification, Operation::SignIn, &description, ctx)?;
+            self.consent(
+                Kind::Verification,
+                Operation::SignIn,
+                Some(&pending_rp),
+                &description,
+                ctx,
+            )?;
             flags |= FLAG_UP | FLAG_UV;
         } else if options.up {
-            self.consent(Kind::Presence, Operation::SignIn, &description, ctx)?;
+            self.consent(
+                Kind::Presence,
+                Operation::SignIn,
+                Some(&pending_rp),
+                &description,
+                ctx,
+            )?;
             flags |= FLAG_UP;
+        } else {
+            // What OpenSSH does before every signature, to find the
+            // security key holding a key handle: no prompt, and the
+            // signature carries no user presence flag.
+            log::debug!(
+                "getAssertion for {}: answering without user presence, as asked",
+                shown(&rp_id)
+            );
         }
 
         let mut pending = PendingAssertions {
@@ -662,10 +863,24 @@ impl Authenticator {
             .tpm
             .sign(&credential.tpm_public, &credential.tpm_private, &digest)
             .map_err(internal)?;
-        log::info!(
-            "signed assertion for {} with credential {}",
-            pending.rp_id,
-            credential.id_hex()
+        // A silent assertion is what OpenSSH asks for before every
+        // signature, to find the key; only the real ones are news.
+        log::log!(
+            if pending.flags & FLAG_UP != 0 {
+                log::Level::Info
+            } else {
+                log::Level::Debug
+            },
+            "signed assertion for {} with credential {}{}",
+            shown(&pending.rp_id),
+            credential.id_hex(),
+            if pending.flags & FLAG_UV != 0 {
+                " (user verification)"
+            } else if pending.flags & FLAG_UP != 0 {
+                " (user presence)"
+            } else {
+                " (no user presence)"
+            }
         );
 
         let mut response = vec![
@@ -724,11 +939,17 @@ impl Authenticator {
     }
 
     fn reset(&mut self, ctx: &RequestContext) -> CtapResult<Option<Value>> {
-        self.consent(Kind::Verification, Operation::Reset, &prompt::reset(), ctx)?;
+        self.consent(
+            Kind::Verification,
+            Operation::Reset,
+            None,
+            &prompt::reset(),
+            ctx,
+        )?;
         let mut keystore = self.open_keystore()?;
         keystore.credentials.clear();
         keystore.save(&mut self.tpm).map_err(internal)?;
-        log::info!("all credentials deleted by authenticatorReset");
+        log::warn!("all credentials deleted by authenticatorReset");
         Ok(None)
     }
 }
@@ -766,7 +987,8 @@ pub fn spawn(tcti: String, keystore: PathBuf, verifier: Verifier) -> Result<Hand
         .name("authenticator".into())
         .spawn(move || {
             let tpm = match Tpm::open(&tcti) {
-                Ok(tpm) => {
+                Ok(mut tpm) => {
+                    log::info!("connected to the TPM ({})", tpm.vendor());
                     let _ = ready_tx.send(Ok(()));
                     tpm
                 }

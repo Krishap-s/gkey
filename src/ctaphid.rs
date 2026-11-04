@@ -311,6 +311,7 @@ impl<T: Transport> Server<T> {
                     self.channels.pop_front();
                 }
                 self.channels.push_back(cid);
+                log::debug!("channel {cid:08x}: opened");
                 return cid;
             }
         }
@@ -329,6 +330,7 @@ impl<T: Transport> Server<T> {
         }
         if let Some(busy) = &self.busy {
             if busy.cid == cid && cmd == CMD_CANCEL {
+                log::info!("channel {cid:08x}: the application cancelled the request");
                 busy.cancel.store(true, Ordering::Relaxed);
                 return Ok(());
             }

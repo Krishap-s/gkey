@@ -24,6 +24,13 @@ and connecting to polkit, so programs running as the user cannot use
 the TPM or create HID devices, while the authentication dialog names
 the web site.  Users no longer join the tss group.
 
+gkey-service now logs what it does by default, one line per event: its
+start, each registration and sign-in with the user's decision, and a
+warning with the reason whenever a client's request is refused, such as
+ssh-keygen -t ed25519-sk, which the TPM cannot support.  Read it with
+"journalctl --user -u gkey.service".  --verbose adds debugging messages
+and --quiet shows only errors.
+
 SSH keys can be kept in the TPM: "ssh-keygen -t ecdsa-sk" works.  To
 make it so, registrations carry a "packed" self attestation signed by
 the new credential, and the credProtect extension is supported.  Ed25519

@@ -274,10 +274,10 @@ Run @var{command} to obtain user consent.  Implies
 
 @item -v
 @itemx --verbose
-Print informational messages; give twice for debugging messages and
-three times to trace every HID message.  The @env{GKEY_LOG}
-environment variable accepts finer grained settings, in the syntax of
-the Rust @code{env_logger} library.
+Also print debugging messages; give twice to trace every HID message.
+The @env{GKEY_LOG} environment variable accepts finer grained
+settings, in the syntax of the Rust @code{env_logger} library.
+@xref{Logging}.
 
 @item -q
 @itemx --quiet
@@ -292,6 +292,48 @@ Display version information and exit.
 
 The exit status is zero when the service stops because of a signal,
 and non-zero when it fails.
+
+@node Logging
+@section Logging
+@cindex logging
+@cindex journal
+
+@command{gkey-service} writes its messages to standard error, which
+systemd sends to the journal:
+
+@example
+journalctl --user -u gkey.service -f
+@end example
+
+By default it reports what it does, one line per event:
+
+@itemize @bullet
+@item
+at start, its version, the keystore, the user consent method, the TPM
+it connected to and the virtual device it created;
+@item
+each registration and sign-in: that the user was asked, whether they
+allowed it, and the credential that was created or used;
+@item
+the user declining or cancelling a request.
+@end itemize
+
+Requests gkey refuses because of the client are warnings, with the
+reason.  For instance, @code{ssh-keygen -t ed25519-sk} is refused
+because gkey keeps its keys in the TPM, which has no Ed25519:
+
+@example
+makeCredential for 'ssh:' refused: the client offers only EdDSA, and
+gkey supports only ES256 (ECDSA P-256), since TPMs have no Ed25519;
+for OpenSSH use 'ssh-keygen -t ecdsa-sk'
+@end example
+
+Routine requests are left for @option{--verbose}: a client looking for
+a passkey that is not here, and the silent requests OpenSSH sends
+before every signature (@pxref{Using with OpenSSH}).  Names that come
+from web pages are quoted and have control characters replaced, so a
+site cannot forge log lines.  Passwords, keys and user names are never
+logged.
 
 @node Invoking gkey
 @chapter Invoking gkey

@@ -1,3 +1,27 @@
+2026-11-04  Krishap  <krishapbusiness@gmail.com>
+
+	Log what gkey-service does.
+
+	* src/ctap2.rs (command_name, status_name, status_level)
+	(algorithm_name, shown, describe): New.
+	(Authenticator::handle): Log the outcome of each request, with a
+	level that depends on the status.
+	(Authenticator::consent): Log the question and the answer.  Take
+	the relying party.
+	(make_credential): Warn when no algorithm is supported, naming the
+	ones offered, and on up=false.  Log what was created.
+	(get_assertion): Log the reason when there is no credential, and
+	tell routine silent assertions from real signatures.
+	(spawn): Log the TPM.
+	* src/ctaphid.rs: Log new channels and cancellations.
+	* src/verify.rs (Operation::name): Make public.
+	* src/bin/gkey-service/main.rs (init_logging): Log at the
+	information level by default; quiet the TPM library.
+	(main): Log the start and the settings.
+	* tests/authenticator.rs (requests_are_logged): New.
+	* tests/helpers/socket-authenticator.rs: Honour GKEY_LOG.
+	* doc/gkey.texi (Logging): New.
+
 2026-11-02  Krishap  <krishapbusiness@gmail.com>
 
 	Test OpenSSH's calls with python-fido2 instead of libfido2.

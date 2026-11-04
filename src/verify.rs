@@ -60,7 +60,9 @@ pub enum Operation {
 }
 
 impl Operation {
-    fn name(self) -> &'static str {
+    /// The name of the operation, as used in logs and in
+    /// `GKEY_OPERATION`.
+    pub fn name(self) -> &'static str {
         match self {
             Operation::Create => "create",
             Operation::SignIn => "sign-in",

@@ -121,7 +121,8 @@ answers the requests that web browsers and other FIDO clients send to it.
                               default) or 'command'
       --verify-command=CMD  run CMD to ask for consent; implies
                               --verify=command
-  -v, --verbose             print more messages; repeat for even more
+  -v, --verbose             also print debugging messages; repeat to trace
+                              every HID message
   -q, --quiet               print only error messages
       --help                display this help and exit
       --version             output version information and exit
@@ -139,15 +140,24 @@ fn try_help(message: &str) -> ExitCode {
 }
 
 fn init_logging(verbosity: i32) {
+    // By default each request and its outcome are logged: the service
+    // runs unattended, and its journal is where its behaviour is told.
     let level = match verbosity {
         i32::MIN..=-1 => log::LevelFilter::Error,
-        0 => log::LevelFilter::Warn,
-        1 => log::LevelFilter::Info,
-        2 => log::LevelFilter::Debug,
+        0 => log::LevelFilter::Info,
+        1 => log::LevelFilter::Debug,
         _ => log::LevelFilter::Trace,
+    };
+    // The TPM library is chatty at the information level (it reports
+    // closing its context); its warnings are enough until debugging.
+    let library = if verbosity >= 1 {
+        level
+    } else {
+        log::LevelFilter::Warn.min(level)
     };
     env_logger::Builder::new()
         .filter_level(level)
+        .filter_module("tss_esapi", library)
         .parse_env("GKEY_LOG")
         .format(|buf, record| {
             let prefix = match record.level() {
@@ -235,6 +245,19 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    log::info!(
+        "{PROGRAM} {} starting{}",
+        gkey::VERSION,
+        if privileged { ", set-user-ID" } else { "" }
+    );
+    log::info!("keystore: {}", keystore_dir.display());
+    log::info!(
+        "user consent: {}",
+        match &command {
+            Some(command) => format!("command '{command}'"),
+            None => "polkit".to_string(),
+        }
+    );
     let tcti = if privileged {
         tpm::DEFAULT_TCTI.to_string()
     } else {
@@ -306,7 +329,10 @@ async fn serve(
         if privileged {
             privilege::drop_privileges().map_err(|e| e.to_string())?;
         }
-        log::info!("authenticator ready");
+        log::info!(
+            "authenticator ready: virtual security key created through {}",
+            uhid.display()
+        );
         let mut server = Server::new(device, authenticator.sender());
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())

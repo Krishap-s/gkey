@@ -47,6 +47,8 @@ impl Transport for Socket {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // GKEY_LOG=debug shows what the authenticator does.
+    env_logger::Builder::from_env("GKEY_LOG").init();
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 {
         eprintln!("Usage: {} SOCKET KEYSTORE-DIR", args[0]);

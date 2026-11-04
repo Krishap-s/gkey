@@ -24,7 +24,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8};
-use std::sync::Mutex;
+use std::sync::{Mutex, Once};
 
 use ciborium::Value;
 use p256::ecdsa::signature::Verifier as _;
@@ -242,6 +242,17 @@ impl Harness {
     }
 
     fn get_assertion(&mut self, rp: &str, allow: &[Vec<u8>], uv: bool) -> Result<Value, u8> {
+        self.get_assertion_with(rp, allow, vec![(text("uv"), Value::Bool(uv))])
+    }
+
+    /// Like `get_assertion`, sending the given options (for instance
+    /// `up=false`, a silent request).
+    fn get_assertion_with(
+        &mut self,
+        rp: &str,
+        allow: &[Vec<u8>],
+        options: Vec<(Value, Value)>,
+    ) -> Result<Value, u8> {
         let mut parameters = vec![(int(1), text(rp)), (int(2), Value::Bytes(vec![9; 32]))];
         if !allow.is_empty() {
             parameters.push((
@@ -259,7 +270,7 @@ impl Harness {
                 ),
             ));
         }
-        parameters.push((int(5), Value::Map(vec![(text("uv"), Value::Bool(uv))])));
+        parameters.push((int(5), Value::Map(options)));
         self.call(ctap2::CMD_GET_ASSERTION, Some(Value::Map(parameters)))
     }
 }
@@ -519,5 +530,168 @@ fn cred_protect_levels() {
         [3, 2, 1, 0]
     );
     drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every message logged by the code under test.
+static LOGS: Mutex<Vec<(log::Level, String)>> = Mutex::new(Vec::new());
+
+struct Collector;
+
+impl log::Log for Collector {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record) {
+        LOGS.lock()
+            .unwrap()
+            .push((record.level(), record.args().to_string()));
+    }
+
+    fn flush(&self) {}
+}
+
+fn collect_logs() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        log::set_logger(&Collector).unwrap();
+        log::set_max_level(log::LevelFilter::Trace);
+    });
+}
+
+/// Whether a message at `level` mentioning every one of `words` was
+/// logged.
+fn logged(level: log::Level, words: &[&str]) -> bool {
+    LOGS.lock()
+        .unwrap()
+        .iter()
+        .any(|(l, m)| *l == level && words.iter().all(|w| m.contains(w)))
+}
+
+#[test]
+fn requests_are_logged() {
+    let Some(tcti) = tcti() else { return };
+    collect_logs();
+    let _guard = TPM_LOCK.lock().unwrap();
+    let dir = scratch_dir("logging");
+    let tpm = Tpm::open(&tcti).unwrap();
+    let mut h = Harness {
+        authenticator: Authenticator::new(
+            tpm,
+            dir.clone(),
+            Verifier {
+                method: Method::Command("true".into()),
+            },
+        ),
+    };
+
+    // A client that only knows Ed25519 (OpenSSH's ed25519-sk): refused,
+    // with the reason where the user will see it by default.
+    let ed25519_only = Value::Map(vec![
+        (int(1), Value::Bytes(vec![7; 32])),
+        (
+            int(2),
+            Value::Map(vec![(text("id"), text("ed.log.example"))]),
+        ),
+        (
+            int(3),
+            Value::Map(vec![(text("id"), Value::Bytes(vec![1; 32]))]),
+        ),
+        (
+            int(4),
+            Value::Array(vec![Value::Map(vec![
+                (text("alg"), int(-8)),
+                (text("type"), text("public-key")),
+            ])]),
+        ),
+    ]);
+    assert_eq!(
+        h.call(ctap2::CMD_MAKE_CREDENTIAL, Some(ed25519_only)).err(),
+        Some(ctap2::CTAP2_ERR_UNSUPPORTED_ALGORITHM)
+    );
+    assert!(logged(
+        log::Level::Warn,
+        &["'ed.log.example'", "offers only EdDSA", "ecdsa-sk"]
+    ));
+    assert!(logged(
+        log::Level::Warn,
+        &["makeCredential refused: unsupported algorithm"]
+    ));
+
+    // A normal registration and sign-in are told at the info level.
+    let (id, _) = h
+        .make_credential("ok.log.example", b"alice", true, &[])
+        .unwrap();
+    assert!(logged(
+        log::Level::Info,
+        &[
+            "created credential",
+            "'ok.log.example'",
+            "resident key",
+            "user verification"
+        ]
+    ));
+    h.get_assertion("ok.log.example", &[], true).unwrap();
+    assert!(logged(
+        log::Level::Info,
+        &["signed assertion for 'ok.log.example'", "user verification"]
+    ));
+    assert!(logged(
+        log::Level::Info,
+        &["the user allowed it to sign in to 'ok.log.example'"]
+    ));
+
+    // A site cannot forge log lines.
+    let _ = h.get_assertion(
+        "evil.log.example\nwarning: fake line",
+        std::slice::from_ref(&id),
+        false,
+    );
+    assert!(LOGS.lock().unwrap().iter().all(|(_, m)| !m.contains('\n')));
+
+    // A probe for a credential that is not here is routine: debug only.
+    assert_eq!(
+        h.get_assertion("missing.log.example", &[], false).err(),
+        Some(ctap2::CTAP2_ERR_NO_CREDENTIALS)
+    );
+    assert!(logged(
+        log::Level::Debug,
+        &["missing.log.example", "no credential to offer"]
+    ));
+    assert!(!logged(log::Level::Warn, &["missing.log.example"]));
+    assert!(!logged(log::Level::Info, &["missing.log.example"]));
+
+    // A silent assertion, as OpenSSH sends before each signature, is
+    // debug too; the user's refusal is informational.
+    let silent = h
+        .get_assertion_with(
+            "ok.log.example",
+            std::slice::from_ref(&id),
+            vec![(text("up"), Value::Bool(false))],
+        )
+        .unwrap();
+    assert_eq!(bytes(get(&silent, 2))[32], 0, "no flags");
+    assert!(logged(log::Level::Debug, &["no user presence"]));
+    drop(h);
+    let tpm = Tpm::open(&tcti).unwrap();
+    let mut h = Harness {
+        authenticator: Authenticator::new(
+            tpm,
+            dir.clone(),
+            Verifier {
+                method: Method::Command("false".into()),
+            },
+        ),
+    };
+    assert!(h.get_assertion("ok.log.example", &[], true).is_err());
+    assert!(logged(
+        log::Level::Info,
+        &["the user did not allow it to sign in to 'ok.log.example'"]
+    ));
+    assert!(logged(
+        log::Level::Info,
+        &["getAssertion refused: operation denied"]
+    ));
     let _ = std::fs::remove_dir_all(&dir);
 }
