@@ -50,3 +50,6 @@ result
 /doc/gkey.ps
 /TAGS
 /gkey-*.tar.gz
+
+# Python bytecode
+__pycache__/
